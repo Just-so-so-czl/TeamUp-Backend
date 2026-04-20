@@ -10,6 +10,9 @@ CREATE TABLE `user` (
 
                          `password` VARCHAR(255) NOT NULL COMMENT '加密后的密码',
 
+    -- 性别枚举：1-男, 2-女
+                          `gender` TINYINT NOT NULL DEFAULT 1 COMMENT '性别枚举: 1-男, 2-女',
+
     -- 头像枚举: 1-8
                          `avatar` TINYINT NOT NULL DEFAULT 1 COMMENT '头像枚举: 1-8 代表不同的预设头像',
 
@@ -123,6 +126,9 @@ CREATE TABLE `task` (
     -- 任务状态：0-未完成, 1-已完成
     -- 使用 TINYINT 存储，节省空间
                          `status` TINYINT NOT NULL DEFAULT 0 COMMENT '任务状态: 0-待办, 1-完成',
+
+    -- 任务完成后的描述/备注
+                         `completion_note` VARCHAR(100) DEFAULT NULL COMMENT '任务完成后的描述/备注',
 
     -- 任务项自己的 DDL
                          `deadline` DATETIME NOT NULL COMMENT '该任务项的截止日期',

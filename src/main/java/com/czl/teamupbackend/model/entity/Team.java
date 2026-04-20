@@ -28,7 +28,7 @@ public class Team implements Serializable {
     private static final long serialVersionUID = 1L;
 
     @Schema(description = "雪花算法生成的分布式唯一ID")
-    @TableId(value = "id", type = IdType.AUTO)
+    @TableId(value = "id", type = IdType.ASSIGN_ID)
     private Long id;
 
     @Schema(description = "小组名称")

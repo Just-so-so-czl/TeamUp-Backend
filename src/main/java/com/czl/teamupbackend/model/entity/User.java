@@ -28,7 +28,7 @@ public class User implements Serializable {
     private static final long serialVersionUID = 1L;
 
     @Schema(description = "雪花算法生成的分布式唯一ID")
-    @TableId(value = "id", type = IdType.AUTO)
+    @TableId(value = "id", type = IdType.ASSIGN_ID)
     private Long id;
 
     @Schema(description = "用户邮箱")
@@ -49,5 +49,7 @@ public class User implements Serializable {
     @Schema(description = "更新时间")
     private LocalDateTime updateTime;
 
+    @Schema(description = "性别")
+    private Integer gender;
 
 }

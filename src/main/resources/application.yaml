@@ -2,7 +2,7 @@ spring:
   application:
     name: TeamUp-backEnd
   datasource:
-    url: jdbc:mysql://localhost:3306/TeamUp?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai
+    url: jdbc:mysql://localhost:3307/TeamUp?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai
     username: root
     password: 103119
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -11,3 +11,10 @@ spring:
 mybatis-plus:
   mapper-locations: classpath:mapper/**/*.xml
   type-aliases-package: com.czl.teamupbackend.model.entity
+
+jwt:
+  # 建议替换为长度 >= 32 的随机字符串；支持明文或 Base64
+  secret: TeamUpJwtSecretKeyAtLeast32Chars!
+  # 过期时间(毫秒)，默认 24 小时
+  expire-ms: 86400000
+  issuer: teamup-backend
