@@ -1,6 +1,7 @@
 spring:
   application:
     name: TeamUp-backEnd
+    port: 8080
   datasource:
     url: jdbc:mysql://localhost:3307/TeamUp?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai
     username: root

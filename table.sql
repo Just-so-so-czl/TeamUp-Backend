@@ -64,6 +64,9 @@ CREATE TABLE `team_member` (
     -- 使用 TINYINT 存储，所有字段不能为空
                                 `role` TINYINT NOT NULL COMMENT '角色枚举: 1-组长, 2-管理员, 3-普通组员',
 
+    -- 角色描述
+                                `role_description` VARCHAR(100) DEFAULT NULL COMMENT '角色描述',
+
     -- 加入时间
                                 `join_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '加入小组时间',
 
@@ -171,3 +174,23 @@ CREATE TABLE `task_assignment` (
                                     KEY `idx_user_id` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='任务负责人分配表';
 
+-- 加入小组请求表（id 由应用侧雪花算法生成，不使用自增）
+CREATE TABLE `team_join_request` (
+                                     `id` BIGINT NOT NULL COMMENT '雪花ID',
+                                     `user_id` BIGINT NOT NULL COMMENT '申请用户ID',
+                                     `team_id` BIGINT NOT NULL COMMENT '目标小组ID',
+                                      `description` VARCHAR(500) default NULL COMMENT '申请描述',
+                                     `status` TINYINT NOT NULL DEFAULT 0 COMMENT '状态：0-待处理，1-已同意，2-已拒绝',
+                                     `create_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                                     `update_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                                     PRIMARY KEY (`id`),
+                                     KEY `idx_team_id_status` (`team_id`, `status`),
+                                     KEY `idx_user_id_status` (`user_id`, `status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='加入小组请求表';
+
+-- 在现有 team_join_request 表上新增约束
+ALTER TABLE `team_join_request`
+    ADD COLUMN `pending_key` TINYINT
+        GENERATED ALWAYS AS (CASE WHEN `status` = 0 THEN 1 ELSE NULL END) STORED
+        COMMENT '待处理唯一约束辅助列',
+    ADD UNIQUE KEY `uk_user_team_pending` (`user_id`, `team_id`, `pending_key`);

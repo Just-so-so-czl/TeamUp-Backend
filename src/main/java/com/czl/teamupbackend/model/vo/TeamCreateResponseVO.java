@@ -11,16 +11,8 @@ import lombok.NoArgsConstructor;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class UserSimpleVO {
+public class TeamCreateResponseVO {
 
     @JsonSerialize(using = ToStringSerializer.class)
-    private Long id;
-
-    private String email;
-
-    private String username;
-
-    private Integer gender;
-
-    private Integer avatar;
+    private Long teamId;
 }
