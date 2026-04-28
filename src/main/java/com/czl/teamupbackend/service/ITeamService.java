@@ -2,7 +2,10 @@ package com.czl.teamupbackend.service;
 
 import com.czl.teamupbackend.model.entity.Team;
 import com.czl.teamupbackend.model.dto.TeamCreateRequest;
+import com.czl.teamupbackend.model.dto.TeamDetailRequest;
+import com.czl.teamupbackend.model.dto.TeamUpdateRequest;
 import com.czl.teamupbackend.model.vo.TeamCreateResponseVO;
+import com.czl.teamupbackend.model.vo.TeamDetailVO;
 import com.baomidou.mybatisplus.extension.service.IService;
 
 /**
@@ -15,5 +18,9 @@ import com.baomidou.mybatisplus.extension.service.IService;
  */
 public interface ITeamService extends IService<Team> {
 
-    TeamCreateResponseVO createTeam(TeamCreateRequest request);
+    TeamCreateResponseVO createTeam(Long userId, TeamCreateRequest request);
+
+    TeamDetailVO getTeamDetail(Long userId, TeamDetailRequest request);
+
+    void updateTeamInfo(Long userId, TeamUpdateRequest request);
 }

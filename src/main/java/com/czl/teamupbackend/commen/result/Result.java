@@ -1,7 +1,6 @@
 package com.czl.teamupbackend.commen.result;
 
 import java.io.Serializable;
-import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -12,7 +11,6 @@ import lombok.NoArgsConstructor;
  */
 @Data
 @NoArgsConstructor
-@AllArgsConstructor
 public class Result<T> implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -32,6 +30,25 @@ public class Result<T> implements Serializable {
      */
     private T data;
 
+    /**
+     * 错误类型（成功时为空）
+     */
+    private String errorType;
+
+    public Result(Integer code, String message, T data) {
+        this.code = code;
+        this.message = message;
+        this.data = data;
+        this.errorType = null;
+    }
+
+    public Result(Integer code, String message, T data, String errorType) {
+        this.code = code;
+        this.message = message;
+        this.data = data;
+        this.errorType = errorType;
+    }
+
     public static <T> Result<T> success() {
         return new Result<>(200, "success", null);
     }
@@ -46,6 +63,10 @@ public class Result<T> implements Serializable {
 
     public static <T> Result<T> fail(Integer code, String message) {
         return new Result<>(code, message, null);
+    }
+
+    public static <T> Result<T> fail(Integer code, String message, String errorType) {
+        return new Result<>(code, message, null, errorType);
     }
 
     public static <T> Result<T> fail(String message) {

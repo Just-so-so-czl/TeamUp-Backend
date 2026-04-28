@@ -1,18 +1,21 @@
 package com.czl.teamupbackend.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.czl.teamupbackend.commen.exception.BizException;
-import com.czl.teamupbackend.mapper.TeamMemberMapper;
-import com.czl.teamupbackend.model.entity.Team;
 import com.czl.teamupbackend.mapper.TeamMapper;
+import com.czl.teamupbackend.mapper.TeamMemberMapper;
 import com.czl.teamupbackend.mapper.UserMapper;
 import com.czl.teamupbackend.model.dto.TeamCreateRequest;
+import com.czl.teamupbackend.model.dto.TeamDetailRequest;
+import com.czl.teamupbackend.model.dto.TeamUpdateRequest;
+import com.czl.teamupbackend.model.entity.Team;
 import com.czl.teamupbackend.model.entity.TeamMember;
 import com.czl.teamupbackend.model.entity.User;
 import com.czl.teamupbackend.model.enums.TeamMemberRoleEnum;
 import com.czl.teamupbackend.model.vo.TeamCreateResponseVO;
+import com.czl.teamupbackend.model.vo.TeamDetailVO;
 import com.czl.teamupbackend.service.ITeamService;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import java.time.LocalDateTime;
 import java.util.concurrent.ThreadLocalRandom;
 import lombok.RequiredArgsConstructor;
@@ -21,12 +24,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * <p>
  * 小组/团队信息表 服务实现类
- * </p>
- *
- * @author czl
- * @since 2026-04-15
  */
 @Service
 @Slf4j
@@ -42,10 +40,10 @@ public class TeamServiceImpl extends ServiceImpl<TeamMapper, Team> implements IT
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public TeamCreateResponseVO createTeam(TeamCreateRequest request) {
-        validateCreateRequest(request);
+    public TeamCreateResponseVO createTeam(Long userId, TeamCreateRequest request) {
+        validateCreateRequest(userId, request);
 
-        User owner = userMapper.selectById(request.getUserId());
+        User owner = userMapper.selectById(userId);
         if (owner == null) {
             throw new BizException(400, "用户不存在");
         }
@@ -53,28 +51,96 @@ public class TeamServiceImpl extends ServiceImpl<TeamMapper, Team> implements IT
         Team team = new Team()
             .setName(request.getName().trim())
             .setDescription(request.getDescription() == null ? null : request.getDescription().trim())
-            .setOwnerId(request.getUserId())
+            .setOwnerId(userId)
             .setInviteCode(generateUniqueInviteCode());
         save(team);
 
         TeamMember teamMember = new TeamMember()
             .setTeamId(team.getId())
-            .setUserId(request.getUserId())
+            .setUserId(userId)
             .setRole(TeamMemberRoleEnum.CAPTAIN.getCode())
             .setJoinTime(LocalDateTime.now());
         teamMemberMapper.insert(teamMember);
 
-        log.info("Team created successfully, teamId={}, ownerId={}", team.getId(), request.getUserId());
+        log.info("Team created successfully, teamId={}, ownerId={}", team.getId(), userId);
         return TeamCreateResponseVO.builder()
             .teamId(team.getId())
             .build();
     }
 
-    private void validateCreateRequest(TeamCreateRequest request) {
+    @Override
+    public TeamDetailVO getTeamDetail(Long userId, TeamDetailRequest request) {
+        if (userId == null || userId <= 0) {
+            throw new BizException(401, "未登录");
+        }
+        if (request == null || request.getTeamId() == null || request.getTeamId() <= 0) {
+            throw new BizException(400, "小组ID不合法");
+        }
+
+        Team team = getById(request.getTeamId());
+        if (team == null) {
+            throw new BizException(404, "小组不存在");
+        }
+
+        boolean isMember = teamMemberMapper.selectCount(
+            new LambdaQueryWrapper<TeamMember>()
+                .eq(TeamMember::getTeamId, request.getTeamId())
+                .eq(TeamMember::getUserId, userId)
+        ) > 0;
+        if (!isMember) {
+            throw new BizException(403, "你不是该小组成员，无法查看邀请码");
+        }
+
+        return TeamDetailVO.builder()
+            .teamId(team.getId())
+            .teamName(team.getName())
+            .description(team.getDescription())
+            .inviteCode(team.getInviteCode())
+            .createTime(team.getCreateTime())
+            .currentUserCaptain(team.getOwnerId() != null && team.getOwnerId().equals(userId))
+            .build();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void updateTeamInfo(Long userId, TeamUpdateRequest request) {
+        if (userId == null || userId <= 0) {
+            throw new BizException(401, "未登录");
+        }
+        if (request == null || request.getTeamId() == null || request.getTeamId() <= 0) {
+            throw new BizException(400, "小组ID不合法");
+        }
+        if (isBlank(request.getName())) {
+            throw new BizException(400, "小组名称不能为空");
+        }
+        String name = request.getName().trim();
+        if (name.length() < 2 || name.length() > 50) {
+            throw new BizException(400, "小组名称长度需在2到50之间");
+        }
+        String description = request.getDescription() == null ? null : request.getDescription().trim();
+        if (description != null && description.length() > 300) {
+            throw new BizException(400, "小组描述长度不能超过300");
+        }
+
+        Team team = getById(request.getTeamId());
+        if (team == null) {
+            throw new BizException(404, "小组不存在");
+        }
+        if (team.getOwnerId() == null || !team.getOwnerId().equals(userId)) {
+            throw new BizException(403, "只有组长可编辑小组信息");
+        }
+
+        team.setName(name);
+        team.setDescription(description);
+        updateById(team);
+        log.info("Team info updated, teamId={}, operatorUserId={}", team.getId(), userId);
+    }
+
+    private void validateCreateRequest(Long userId, TeamCreateRequest request) {
         if (request == null) {
             throw new BizException(400, "请求参数不能为空");
         }
-        if (request.getUserId() == null || request.getUserId() <= 0) {
+        if (userId == null || userId <= 0) {
             throw new BizException(400, "用户ID不合法");
         }
         if (isBlank(request.getName())) {

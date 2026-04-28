@@ -194,3 +194,20 @@ ALTER TABLE `team_join_request`
         GENERATED ALWAYS AS (CASE WHEN `status` = 0 THEN 1 ELSE NULL END) STORED
         COMMENT '待处理唯一约束辅助列',
     ADD UNIQUE KEY `uk_user_team_pending` (`user_id`, `team_id`, `pending_key`);
+
+CREATE TABLE `team_message` (
+                                `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+                                `title` VARCHAR(100) NOT NULL COMMENT '消息标题',
+                                `content` TEXT NOT NULL COMMENT '消息内容',
+                                `team_id` BIGINT NOT NULL COMMENT '所属小组ID',
+                                `type` tinyint NOT NULL COMMENT '消息类型',
+                                `user_id` BIGINT NOT NULL COMMENT '接收用户ID',
+                                related_url VARCHAR(200) COMMENT '跳转URL',
+                                `is_processed` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已处理: 0-未处理, 1-已处理',
+                                `create_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                                `update_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '处理时间',
+                                PRIMARY KEY (`id`),
+                                KEY `idx_team_id` (`team_id`),
+                                KEY `idx_user_id` (`user_id`),
+                                KEY `idx_is_processed` (`is_processed`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='消息表';

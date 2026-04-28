@@ -5,10 +5,7 @@ import lombok.Data;
 @Data
 public class TeamCreateRequest {
 
-    private Long userId;
-
     private String name;
 
     private String description;
 }
-

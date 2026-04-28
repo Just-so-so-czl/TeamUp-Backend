@@ -1,6 +1,7 @@
 package com.czl.teamupbackend.commen.jwt;
 
 import com.czl.teamupbackend.commen.context.UserContext;
+import com.czl.teamupbackend.commen.enums.AuthErrorType;
 import com.czl.teamupbackend.commen.properties.JwtProperties;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
@@ -66,22 +67,24 @@ public class JwtTokenUtil {
     /**
      * Validate token and bind user info to UserContext.
      */
-    public boolean validateToken(String token) {
+    public AuthErrorType validateToken(String token) {
         try {
             Claims claims = parseToken(token);
             Long userId = parseUserId(claims);
             String username = claims.get(CLAIM_USERNAME, String.class);
             UserContext.setCurrentUser(userId, username);
-            return true;
+            return null;
         } catch (ExpiredJwtException e) {
             log.warn("JWT token expired: {}", e.getMessage());
+            return AuthErrorType.TOKEN_EXPIRED;
         } catch (UnsupportedJwtException | MalformedJwtException | SecurityException
                  | IllegalArgumentException e) {
             log.warn("JWT token invalid: {}", e.getMessage());
+            return AuthErrorType.TOKEN_INVALID;
         } catch (Exception e) {
             log.error("JWT token validation failed unexpectedly", e);
+            return AuthErrorType.TOKEN_INVALID;
         }
-        return false;
     }
 
     /**

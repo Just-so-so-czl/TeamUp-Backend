@@ -1,16 +1,31 @@
 package com.czl.teamupbackend.service;
 
-import com.czl.teamupbackend.model.entity.Task;
 import com.baomidou.mybatisplus.extension.service.IService;
+import com.czl.teamupbackend.model.entity.Task;
+import java.time.LocalDateTime;
 
 /**
- * <p>
- * 具体任务项表 服务类
- * </p>
- *
- * @author czl
- * @since 2026-04-15
+ * 任务服务
  */
 public interface ITaskService extends IService<Task> {
 
+    /**
+     * 创建任务（仅Captain/Leader）
+     *
+     * @param currentUserId 当前用户ID
+     * @param taskListId 任务清单ID
+     * @param description 任务描述
+     * @param deadline 任务截止时间
+     */
+    void createTask(Long currentUserId, Long taskListId, String description, LocalDateTime deadline);
+
+    /**
+     * 完成任务（可选填写完成备注）
+     *
+     * @param currentUserId 当前用户ID
+     * @param taskId 任务ID
+     * @param completionNote 完成备注
+     */
+    void completeTask(Long currentUserId, Long taskId, String completionNote);
 }
+

@@ -12,6 +12,9 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BizException.class)
     public Result<Void> handleBizException(BizException e) {
         log.warn("Business exception: {}", e.getMessage());
+        if (e.getCode() != null && e.getCode() == 401) {
+            return Result.fail(401, e.getMessage(), "UNAUTHORIZED");
+        }
         return Result.fail(e.getCode(), e.getMessage());
     }
 

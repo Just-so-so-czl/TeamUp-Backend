@@ -13,4 +13,29 @@ import com.baomidou.mybatisplus.extension.service.IService;
  */
 public interface ITaskAssignmentService extends IService<TaskAssignment> {
 
+    /**
+     * 成员认领任务
+     *
+     * @param currentUserId 当前用户ID
+     * @param taskId 任务ID
+     */
+    void claimTask(Long currentUserId, Long taskId);
+
+    /**
+     * Captain/Leader 分配任务负责人
+     *
+     * @param operatorUserId 操作人ID
+     * @param taskId 任务ID
+     * @param assigneeUserId 被分配成员ID
+     */
+    void assignTask(Long operatorUserId, Long taskId, Long assigneeUserId);
+
+    /**
+     * Captain/Leader 移除任务负责人
+     *
+     * @param operatorUserId 操作人ID
+     * @param taskId 任务ID
+     * @param assigneeUserId 被移除成员ID
+     */
+    void removeTaskAssignee(Long operatorUserId, Long taskId, Long assigneeUserId);
 }

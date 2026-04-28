@@ -71,6 +71,24 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             .build();
     }
 
+    @Override
+    public UserSimpleVO getCurrentUserInfo(Long userId) {
+        if (userId == null || userId <= 0) {
+            throw new BizException(401, "未登录");
+        }
+        User user = getById(userId);
+        if (user == null) {
+            throw new BizException(401, "用户不存在或已失效");
+        }
+        return UserSimpleVO.builder()
+            .id(user.getId())
+            .email(user.getEmail())
+            .username(user.getUsername())
+            .gender(user.getGender())
+            .avatar(user.getAvatar())
+            .build();
+    }
+
     private void validateRegisterRequest(UserRegisterRequest request) {
         if (request == null) {
             throw new BizException(400, "请求参数不能为空");
