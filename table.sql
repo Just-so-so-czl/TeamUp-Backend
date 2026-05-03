@@ -211,3 +211,25 @@ CREATE TABLE `team_message` (
                                 KEY `idx_user_id` (`user_id`),
                                 KEY `idx_is_processed` (`is_processed`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='消息表';
+
+-- 小组 Agent 文档元数据表（仅存信息，不存正文）
+CREATE TABLE `document` (
+                               `id` BIGINT UNSIGNED NOT NULL COMMENT '雪花ID',
+                               `team_id` BIGINT UNSIGNED NOT NULL COMMENT '小组ID',
+                               `title` VARCHAR(200) NOT NULL COMMENT '文档标题',
+                               `type` TINYINT UNSIGNED NOT NULL COMMENT '文档业务类型：1-资料文档 2-协作文档快照 3-Agent知识库文档',
+                               `storage_path` VARCHAR(512) NOT NULL COMMENT '对象存储路径（OSS Key/URL）',
+                               `file_type` VARCHAR(32) NOT NULL COMMENT '文件类型：pdf/docx/md/txt等',
+                               `file_size` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '文件大小(字节)',
+                               `creator_id` BIGINT UNSIGNED NOT NULL COMMENT '上传人ID',
+                               `create_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                               `update_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                               PRIMARY KEY (`id`),
+
+                               KEY `idx_team_type_ctime` (`team_id`, `type`, `create_time`),
+                               KEY `idx_team_ctime` (`team_id`, `create_time`),
+                               KEY `idx_creator_ctime` (`creator_id`, `create_time`),
+                               KEY `idx_storage_path` (`storage_path`(191)),
+                               KEY `idx_file_type` (`file_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='小组知识库文档元数据表';
+

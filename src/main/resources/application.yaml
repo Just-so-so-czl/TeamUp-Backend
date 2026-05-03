@@ -1,21 +1,39 @@
 spring:
   application:
     name: TeamUp-backEnd
-    port: 8080
+  main:
+    banner-mode: "console"
   datasource:
-    url: jdbc:mysql://localhost:3307/TeamUp?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
-    username: root
-    password: 103119
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3307/TeamUp?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&connectTimeout=5000&socketTimeout=60000&autoReconnect=true}
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:103119}
     driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      connection-timeout: 10000
+      validation-timeout: 3000
+      initialization-fail-timeout: 0
+      minimum-idle: 5
+      maximum-pool-size: 20
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      keepalive-time: 300000
+      connection-test-query: SELECT 1
 
-# MyBatis-Plus 配置
+server:
+  port: 8080
+
 mybatis-plus:
   mapper-locations: classpath:mapper/**/*.xml
   type-aliases-package: com.czl.teamupbackend.model.entity
 
 jwt:
-  # 建议替换为长度 >= 32 的随机字符串；支持明文或 Base64
   secret: TeamUpJwtSecretKeyAtLeast32Chars!
-  # 过期时间(毫秒)，默认 24 小时
   expire-ms: 86400000
   issuer: teamup-backend
+
+aliyun:
+  oss:
+    endpoint: ${ALIYUN_OSS_ENDPOINT:oss-cn-hangzhou.aliyuncs.com}
+    access-key-id: ${ALIYUN_OSS_ACCESS_KEY_ID:}
+    access-key-secret: ${ALIYUN_OSS_ACCESS_KEY_SECRET:}
+    bucket-name: ${ALIYUN_OSS_BUCKET_NAME:team-up-bucket}
