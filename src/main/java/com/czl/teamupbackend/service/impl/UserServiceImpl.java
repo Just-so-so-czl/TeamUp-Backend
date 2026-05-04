@@ -6,11 +6,13 @@ import com.czl.teamupbackend.commen.exception.BizException;
 import com.czl.teamupbackend.commen.jwt.JwtTokenUtil;
 import com.czl.teamupbackend.mapper.UserMapper;
 import com.czl.teamupbackend.model.dto.UserLoginRequest;
+import com.czl.teamupbackend.model.dto.UserProfileUpdateRequest;
 import com.czl.teamupbackend.model.dto.UserRegisterRequest;
 import com.czl.teamupbackend.model.entity.User;
 import com.czl.teamupbackend.model.vo.LoginResponseVO;
 import com.czl.teamupbackend.model.vo.UserSimpleVO;
 import com.czl.teamupbackend.service.IUserService;
+import java.time.LocalDateTime;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -80,6 +82,53 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         if (user == null) {
             throw new BizException(401, "用户不存在或已失效");
         }
+        return UserSimpleVO.builder()
+            .id(user.getId())
+            .email(user.getEmail())
+            .username(user.getUsername())
+            .gender(user.getGender())
+            .avatar(user.getAvatar())
+            .build();
+    }
+
+    @Override
+    public UserSimpleVO updateProfile(Long userId, UserProfileUpdateRequest request) {
+        if (userId == null || userId <= 0) {
+            throw new BizException(401, "未登录");
+        }
+        if (request == null) {
+            throw new BizException(400, "请求参数不能为空");
+        }
+        User user = getById(userId);
+        if (user == null) {
+            throw new BizException(404, "用户不存在");
+        }
+
+        String email = request.getEmail() == null ? "" : request.getEmail().trim();
+        String username = request.getUsername() == null ? "" : request.getUsername().trim();
+        Integer avatar = request.getAvatar();
+
+        if (!EMAIL_PATTERN.matcher(email).matches()) {
+            throw new BizException(400, "请输入合法邮箱");
+        }
+        if (username.length() < 2 || username.length() > 20) {
+            throw new BizException(400, "用户名长度需在2到20个字符之间");
+        }
+        if (avatar == null || avatar < 1 || avatar > 8) {
+            throw new BizException(400, "头像参数不合法");
+        }
+
+        User emailOwner = getOne(new LambdaQueryWrapper<User>().eq(User::getEmail, email).last("limit 1"));
+        if (emailOwner != null && !emailOwner.getId().equals(userId)) {
+            throw new BizException(400, "该邮箱已被占用");
+        }
+
+        user.setEmail(email);
+        user.setUsername(username);
+        user.setAvatar(avatar);
+        user.setUpdateTime(LocalDateTime.now());
+        updateById(user);
+        log.info("User profile updated, userId={}", userId);
         return UserSimpleVO.builder()
             .id(user.getId())
             .email(user.getEmail())

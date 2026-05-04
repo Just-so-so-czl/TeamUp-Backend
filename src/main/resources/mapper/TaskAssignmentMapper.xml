@@ -2,4 +2,23 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.czl.teamupbackend.mapper.TaskAssignmentMapper">
 
+    <select id="selectDeadlineReminderCandidates" resultType="com.czl.teamupbackend.model.vo.TaskDeadlineReminderCandidateVO">
+        SELECT
+            ta.task_id AS taskId,
+            ta.user_id AS assigneeUserId,
+            u.email AS assigneeEmail,
+            u.username AS assigneeName,
+            t.description AS taskDescription,
+            t.deadline AS deadline
+        FROM task_assignment ta
+        INNER JOIN task t ON ta.task_id = t.id
+        INNER JOIN user u ON ta.user_id = u.id
+        WHERE t.status = 0
+          AND t.deadline IS NOT NULL
+          AND t.deadline >= #{startDeadline,jdbcType=TIMESTAMP}
+          AND t.deadline &lt; #{endDeadline,jdbcType=TIMESTAMP}
+          AND u.email IS NOT NULL
+          AND u.email != ''
+    </select>
+
 </mapper>

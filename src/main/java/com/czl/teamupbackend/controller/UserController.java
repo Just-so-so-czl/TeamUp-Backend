@@ -4,6 +4,7 @@ import com.czl.teamupbackend.commen.context.UserContext;
 import com.czl.teamupbackend.commen.exception.BizException;
 import com.czl.teamupbackend.commen.result.Result;
 import com.czl.teamupbackend.model.dto.UserLoginRequest;
+import com.czl.teamupbackend.model.dto.UserProfileUpdateRequest;
 import com.czl.teamupbackend.model.dto.UserRegisterRequest;
 import com.czl.teamupbackend.model.vo.LoginResponseVO;
 import com.czl.teamupbackend.model.vo.UserSimpleVO;
@@ -15,9 +16,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * 用户控制器
- */
 @Slf4j
 @RestController
 @RequestMapping("/user")
@@ -47,5 +45,15 @@ public class UserController {
         }
         UserSimpleVO user = userService.getCurrentUserInfo(userId);
         return Result.success("查询成功", user);
+    }
+
+    @PostMapping("/update-profile")
+    public Result<UserSimpleVO> updateProfile(@RequestBody UserProfileUpdateRequest request) {
+        Long userId = UserContext.getCurrentUserId();
+        if (userId == null) {
+            throw new BizException(401, "未登录");
+        }
+        UserSimpleVO user = userService.updateProfile(userId, request);
+        return Result.success("更新成功", user);
     }
 }

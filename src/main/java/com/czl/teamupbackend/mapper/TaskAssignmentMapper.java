@@ -1,7 +1,11 @@
 package com.czl.teamupbackend.mapper;
 
 import com.czl.teamupbackend.model.entity.TaskAssignment;
+import com.czl.teamupbackend.model.vo.TaskDeadlineReminderCandidateVO;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import java.time.LocalDateTime;
+import java.util.List;
+import org.apache.ibatis.annotations.Param;
 
 /**
  * <p>
@@ -13,4 +17,8 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
  */
 public interface TaskAssignmentMapper extends BaseMapper<TaskAssignment> {
 
+    List<TaskDeadlineReminderCandidateVO> selectDeadlineReminderCandidates(
+        @Param("startDeadline") LocalDateTime startDeadline,
+        @Param("endDeadline") LocalDateTime endDeadline
+    );
 }

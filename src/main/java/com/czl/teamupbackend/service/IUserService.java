@@ -2,6 +2,7 @@ package com.czl.teamupbackend.service;
 
 import com.czl.teamupbackend.model.entity.User;
 import com.czl.teamupbackend.model.dto.UserLoginRequest;
+import com.czl.teamupbackend.model.dto.UserProfileUpdateRequest;
 import com.czl.teamupbackend.model.dto.UserRegisterRequest;
 import com.czl.teamupbackend.model.vo.LoginResponseVO;
 import com.czl.teamupbackend.model.vo.UserSimpleVO;
@@ -22,4 +23,6 @@ public interface IUserService extends IService<User> {
     LoginResponseVO login(UserLoginRequest request);
 
     UserSimpleVO getCurrentUserInfo(Long userId);
+
+    UserSimpleVO updateProfile(Long userId, UserProfileUpdateRequest request);
 }
