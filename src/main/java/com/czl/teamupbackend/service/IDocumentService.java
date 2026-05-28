@@ -1,5 +1,6 @@
 package com.czl.teamupbackend.service;
 
+import com.czl.teamupbackend.model.vo.MentorSidebarDocListVO;
 import com.czl.teamupbackend.model.entity.Document;
 import com.czl.teamupbackend.model.vo.DocumentListVO;
 import com.baomidou.mybatisplus.extension.service.IService;
@@ -24,4 +25,6 @@ public interface IDocumentService extends IService<Document> {
     void deleteDocument(Long currentUserId, Long documentId);
 
     String generateDownloadUrl(Long currentUserId, Long documentId);
+
+    MentorSidebarDocListVO listMentorSidebarDocs(Long currentUserId, Long teamId, Integer type);
 }

@@ -14,6 +14,8 @@ import com.czl.teamupbackend.model.entity.User;
 import com.czl.teamupbackend.model.enums.TeamMemberRoleEnum;
 import com.czl.teamupbackend.model.vo.DocumentItemVO;
 import com.czl.teamupbackend.model.vo.DocumentListVO;
+import com.czl.teamupbackend.model.vo.MentorSidebarDocItemVO;
+import com.czl.teamupbackend.model.vo.MentorSidebarDocListVO;
 import com.czl.teamupbackend.service.IDocumentService;
 import com.czl.teamupbackend.service.IOssService;
 import java.time.LocalDateTime;
@@ -37,6 +39,7 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
     private static final int TYPE_RESOURCE = 1;
     private static final int TYPE_AGENT = 3;
     private static final Set<String> ALLOWED_FILE_TYPES = Set.of("pdf", "docx", "md", "txt");
+    private static final DateTimeFormatter MENTOR_DATE_FMT = DateTimeFormatter.ofPattern("MM/dd");
 
     private final TeamMapper teamMapper;
     private final TeamMemberMapper teamMemberMapper;
@@ -168,6 +171,36 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
             fileName = fileName + "." + fileType;
         }
         return ossService.generateDownloadUrl(document.getStoragePath(), fileName);
+    }
+
+    @Override
+    public MentorSidebarDocListVO listMentorSidebarDocs(Long currentUserId, Long teamId, Integer type) {
+        TeamMember member = validateMembership(currentUserId, teamId);
+        validateDocumentType(type);
+
+        List<Document> documents = this.list(new LambdaQueryWrapper<Document>()
+            .eq(Document::getTeamId, teamId)
+            .eq(Document::getType, type)
+            .orderByDesc(Document::getCreateTime));
+
+        if (documents.isEmpty()) {
+            return MentorSidebarDocListVO.builder().documents(Collections.emptyList()).build();
+        }
+
+        List<Long> creatorIds = documents.stream().map(Document::getCreatorId).distinct().toList();
+        Map<Long, String> userNameMap = userMapper.selectList(new LambdaQueryWrapper<User>().in(User::getId, creatorIds))
+            .stream()
+            .collect(Collectors.toMap(User::getId, User::getUsername));
+
+        List<MentorSidebarDocItemVO> items = documents.stream().map(doc -> MentorSidebarDocItemVO.builder()
+            .documentId(String.valueOf(doc.getId()))
+            .title(doc.getTitle())
+            .creatorName(userNameMap.getOrDefault(doc.getCreatorId(), "未知用户"))
+            .dateLabel(doc.getCreateTime() == null ? "--/--" : doc.getCreateTime().format(MENTOR_DATE_FMT))
+            .fileType(doc.getFileType() == null ? "" : doc.getFileType().toLowerCase())
+            .build()).toList();
+
+        return MentorSidebarDocListVO.builder().documents(items).build();
     }
 
     private Document getDocumentById(Long documentId) {

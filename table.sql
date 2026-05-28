@@ -233,3 +233,46 @@ CREATE TABLE `document` (
                                KEY `idx_file_type` (`file_type`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='小组知识库文档元数据表';
 
+-- 1) 会话主表
+CREATE TABLE IF NOT EXISTS ai_chat_session (
+                                               id                BIGINT       NOT NULL COMMENT '会话ID(雪花ID)',
+                                               team_id           BIGINT       NOT NULL COMMENT '小组ID',
+                                               creator_user_id   BIGINT       NOT NULL COMMENT '创建人用户ID',
+                                               title             VARCHAR(128) NOT NULL DEFAULT '' COMMENT '会话标题',
+    status            TINYINT      NOT NULL DEFAULT 1 COMMENT '状态:1=进行中,2=已关闭',
+    last_message_at   DATETIME     NULL COMMENT '最后一条消息时间',
+    message_count     INT          NOT NULL DEFAULT 0 COMMENT '消息数量',
+    deleted           TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除:0=否,1=是',
+    created_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (id),
+    KEY idx_team_last_message (team_id, last_message_at),
+    KEY idx_creator_created_at (creator_user_id, created_at),
+    KEY idx_status_deleted (status, deleted)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI导师对话会话表';
+
+
+-- 2) 消息索引表（正文在 MongoDB）
+CREATE TABLE IF NOT EXISTS ai_chat_message_index (
+                                                     id                BIGINT       NOT NULL COMMENT '消息索引ID(雪花ID)',
+                                                     session_id        BIGINT       NOT NULL COMMENT '会话ID',
+                                                     team_id           BIGINT       NOT NULL COMMENT '小组ID',
+                                                     user_id           BIGINT       NULL COMMENT '发送者用户ID(系统消息可为空)',
+                                                     sender_type       VARCHAR(16)  NOT NULL COMMENT '发送者:USER/ASSISTANT/SYSTEM',
+    message_type      VARCHAR(32)  NOT NULL DEFAULT 'TEXT' COMMENT '消息类型:TEXT/TASK_SUGGESTION/SUMMARY/MEMORY_REF',
+    mongo_message_id  VARCHAR(64)  NOT NULL COMMENT 'Mongo文档ID',
+    trace_id          VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '链路追踪ID',
+    token_input       INT          NOT NULL DEFAULT 0 COMMENT '输入token数',
+    token_output      INT          NOT NULL DEFAULT 0 COMMENT '输出token数',
+    status            TINYINT      NOT NULL DEFAULT 1 COMMENT '状态:1=PENDING,2=DONE,3=FAILED',
+    error_msg         VARCHAR(512) NOT NULL DEFAULT '' COMMENT '失败原因',
+    deleted           TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除:0=否,1=是',
+    created_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (id),
+    KEY idx_session_created_at (session_id, created_at),
+    KEY idx_session_status_deleted (session_id, status, deleted),
+    KEY idx_team_created_at (team_id, created_at),
+    KEY idx_trace_id (trace_id),
+    UNIQUE KEY uk_mongo_message_id (mongo_message_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI导师对话消息索引表';

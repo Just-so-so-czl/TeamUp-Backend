@@ -8,7 +8,9 @@ import com.czl.teamupbackend.model.dto.DocumentDownloadRequest;
 import com.czl.teamupbackend.model.dto.DocumentListQueryRequest;
 import com.czl.teamupbackend.model.dto.DocumentUpdateRequest;
 import com.czl.teamupbackend.model.dto.DocumentUploadMetaRequest;
+import com.czl.teamupbackend.model.dto.MentorSidebarDocRequest;
 import com.czl.teamupbackend.model.vo.DocumentListVO;
+import com.czl.teamupbackend.model.vo.MentorSidebarDocListVO;
 import com.czl.teamupbackend.service.IDocumentService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -37,6 +39,18 @@ public class DocumentController {
             throw new BizException(400, "参数不完整");
         }
         return Result.success("查询成功", documentService.listTeamDocuments(userId, request.getTeamId(), request.getType()));
+    }
+
+    @PostMapping("/mentor-sidebar-list")
+    public Result<MentorSidebarDocListVO> mentorSidebarList(@RequestBody MentorSidebarDocRequest request) {
+        Long userId = UserContext.getCurrentUserId();
+        if (userId == null) {
+            throw new BizException(401, "未登录");
+        }
+        if (request == null || request.getTeamId() == null || request.getType() == null) {
+            throw new BizException(400, "参数不完整");
+        }
+        return Result.success(documentService.listMentorSidebarDocs(userId, request.getTeamId(), request.getType()));
     }
 
     @PostMapping("/upload")
@@ -91,3 +105,4 @@ public class DocumentController {
         return Result.success("查询成功", url);
     }
 }
+
