@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.HashMap;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.Executor;
@@ -56,6 +57,8 @@ public class MentorChatServiceImpl implements IMentorChatService {
     private static final int STATUS_FAILED = 3;
     private static final String DEFAULT_SESSION_TITLE = "智能导师对话";
     private static final int SESSION_TITLE_PREFIX_MAX = 18;
+    private static final String TOOL_CTX_USER_ID = "userId";
+    private static final String TOOL_CTX_TEAM_ID = "teamId";
     private static final String SYSTEM_PROMPT = "你是 TeamUp 平台的智能导师，请给出清晰、可执行、简洁的中文建议。";
 
     private final ChatClient.Builder chatClientBuilder;
@@ -98,13 +101,15 @@ public class MentorChatServiceImpl implements IMentorChatService {
         aiChatMessageIndexService.save(assistantMsgIndex);
 
         SseEmitter emitter = new SseEmitter(0L);
+        Map<String, Object> toolContext = buildToolContext(userId, request.getTeamId(), session.getTeamId());
         mvcAsyncTaskExecutor.execute(() -> doStream(
-            emitter, message, session, traceId, conversationId, assistantMsgIndex, assistantMongoId));
+            emitter, message, session, traceId, conversationId, assistantMsgIndex, assistantMongoId, toolContext));
         return emitter;
     }
 
     private void doStream(SseEmitter emitter, String message, AiChatSession session, String traceId,
-                          String conversationId, AiChatMessageIndex assistantMsgIndex, String assistantMongoId) {
+                          String conversationId, AiChatMessageIndex assistantMsgIndex, String assistantMongoId,
+                          Map<String, Object> toolContext) {
         StringBuilder assistantFullText = new StringBuilder();
         try {
             emitter.send(SseEmitter.event()
@@ -115,6 +120,8 @@ public class MentorChatServiceImpl implements IMentorChatService {
             chatClient.prompt()
                 .system(SYSTEM_PROMPT)
                 .user(message)
+                .toolNames("queryTeamOverview", "queryTeamMembers", "queryTeamTaskLists", "queryTeamDocuments")
+                .toolContext(toolContext)
                 .advisors(messageChatMemoryAdvisor)
                 .advisors(spec -> spec.param(ChatMemory.CONVERSATION_ID, conversationId))
                 .stream()
@@ -318,6 +325,18 @@ public class MentorChatServiceImpl implements IMentorChatService {
             return normalized;
         }
         return normalized.substring(0, SESSION_TITLE_PREFIX_MAX) + "...";
+    }
+
+    private Map<String, Object> buildToolContext(Long userId, Long requestTeamId, Long sessionTeamId) {
+        Map<String, Object> context = new HashMap<>(4);
+        if (userId != null) {
+            context.put(TOOL_CTX_USER_ID, userId);
+        }
+        Long resolvedTeamId = requestTeamId != null ? requestTeamId : sessionTeamId;
+        if (resolvedTeamId != null) {
+            context.put(TOOL_CTX_TEAM_ID, resolvedTeamId);
+        }
+        return context;
     }
 
     private AiChatMessageIndex buildMsgIndex(AiChatSession session, Long userId, String senderType, String traceId, Integer status) {

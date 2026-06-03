@@ -14,7 +14,7 @@ import com.czl.teamupbackend.model.entity.User;
 import com.czl.teamupbackend.model.enums.TeamMemberRoleEnum;
 import com.czl.teamupbackend.model.vo.DocumentItemVO;
 import com.czl.teamupbackend.model.vo.DocumentListVO;
-import com.czl.teamupbackend.model.vo.MentorSidebarDocItemVO;
+import com.czl.teamupbackend.model.vo.MentorSidebarDocItemVO; 
 import com.czl.teamupbackend.model.vo.MentorSidebarDocListVO;
 import com.czl.teamupbackend.service.IDocumentService;
 import com.czl.teamupbackend.service.IOssService;
