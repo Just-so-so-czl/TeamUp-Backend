@@ -20,6 +20,8 @@ public interface IDocumentService extends IService<Document> {
 
     void uploadDocument(Long currentUserId, Long teamId, Integer type, String title, MultipartFile file);
 
+    void createCollaborationDocument(Long currentUserId, Long teamId, String title);
+
     void updateDocumentTitle(Long currentUserId, Long documentId, String title);
 
     void deleteDocument(Long currentUserId, Long documentId);

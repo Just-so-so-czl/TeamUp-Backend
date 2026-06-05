@@ -4,6 +4,7 @@ import com.czl.teamupbackend.commen.context.UserContext;
 import com.czl.teamupbackend.commen.exception.BizException;
 import com.czl.teamupbackend.commen.result.Result;
 import com.czl.teamupbackend.model.dto.DocumentDeleteRequest;
+import com.czl.teamupbackend.model.dto.DocumentCollabCreateRequest;
 import com.czl.teamupbackend.model.dto.DocumentDownloadRequest;
 import com.czl.teamupbackend.model.dto.DocumentListQueryRequest;
 import com.czl.teamupbackend.model.dto.DocumentUpdateRequest;
@@ -19,6 +20,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.multipart.MultipartFile;
 
 @RestController
@@ -54,7 +56,7 @@ public class DocumentController {
     }
 
     @PostMapping("/upload")
-    public Result<Void> upload(@ModelAttribute DocumentUploadMetaRequest request, @ModelAttribute("file") MultipartFile file) {
+    public Result<Void> upload(@ModelAttribute DocumentUploadMetaRequest request, @RequestParam("file") MultipartFile file) {
         Long userId = UserContext.getCurrentUserId();
         if (userId == null) {
             throw new BizException(401, "未登录");
@@ -64,6 +66,19 @@ public class DocumentController {
         }
         documentService.uploadDocument(userId, request.getTeamId(), request.getType(), request.getTitle(), file);
         return Result.success("上传成功", null);
+    }
+
+    @PostMapping("/create-collab")
+    public Result<Void> createCollab(@RequestBody DocumentCollabCreateRequest request) {
+        Long userId = UserContext.getCurrentUserId();
+        if (userId == null) {
+            throw new BizException(401, "未登录");
+        }
+        if (request == null || request.getTeamId() == null) {
+            throw new BizException(400, "参数不完整");
+        }
+        documentService.createCollaborationDocument(userId, request.getTeamId(), request.getTitle());
+        return Result.success("创建成功", null);
     }
 
     @PostMapping("/update")
@@ -105,4 +120,3 @@ public class DocumentController {
         return Result.success("查询成功", url);
     }
 }
-

@@ -45,7 +45,7 @@ public class Document implements Serializable {
     private String title;
 
     /**
-     * 文档业务类型：1-资料文档 2-协作文档快照 3-Agent知识库文档
+     * 文档业务类型：1-资料文档 2-协作文档
      */
     @TableField("type")
     private Integer type;

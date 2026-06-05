@@ -34,7 +34,7 @@ public class AiToolsConfig {
     private static final String TOOL_CTX_USER_ID = "userId";
     private static final String TOOL_CTX_TEAM_ID = "teamId";
     private static final int DOCUMENT_TYPE_RESOURCE = 1;
-    private static final int DOCUMENT_TYPE_AGENT = 3;
+    private static final int DOCUMENT_TYPE_COLLAB = 2;
 
     @Bean
     @Description("获取当前小组的整体概览信息，包括小组基础信息、成员数量、任务数量、未完成任务数量、文档数量和当前用户在小组中的角色")
@@ -50,7 +50,7 @@ public class AiToolsConfig {
             TeamMembersManageVO members = teamMemberService.getTeamMembersManage(identity.userId(), identity.teamId());
             TeamTaskListVO taskLists = taskListService.listTeamTaskLists(identity.userId(), identity.teamId());
             DocumentListVO resourceDocs = documentService.listTeamDocuments(identity.userId(), identity.teamId(), DOCUMENT_TYPE_RESOURCE);
-            DocumentListVO agentDocs = documentService.listTeamDocuments(identity.userId(), identity.teamId(), DOCUMENT_TYPE_AGENT);
+            DocumentListVO collabDocs = documentService.listTeamDocuments(identity.userId(), identity.teamId(), DOCUMENT_TYPE_COLLAB);
 
             Map<String, Object> overview = new HashMap<>();
             overview.put("team", Map.of(
@@ -69,7 +69,7 @@ public class AiToolsConfig {
             overview.put("taskCount", countTasks(taskLists));
             overview.put("unfinishedTaskCount", countUnfinishedTasks(taskLists));
             overview.put("resourceDocumentCount", resourceDocs.getDocuments() == null ? 0 : resourceDocs.getDocuments().size());
-            overview.put("agentDocumentCount", agentDocs.getDocuments() == null ? 0 : agentDocs.getDocuments().size());
+            overview.put("collaborationDocumentCount", collabDocs.getDocuments() == null ? 0 : collabDocs.getDocuments().size());
             return overview;
         };
     }
@@ -121,7 +121,7 @@ public class AiToolsConfig {
     }
 
     @Bean
-    @Description("获取当前小组文档列表，可按文档类型筛选：1 表示资料文档，3 表示 Agent 知识库文档；不传类型时返回两类文档")
+    @Description("获取当前小组文档列表，可按文档类型筛选：1 表示资料文档，2 表示协作文档；不传类型时返回两类文档")
     public BiFunction<AiTeamDocumentsToolRequest, ToolContext, Map<String, Object>> queryTeamDocuments(IDocumentService documentService) {
         return (request, toolContext) -> {
             ToolIdentity identity = resolveIdentity(request, toolContext, "查询小组文档失败");
@@ -129,11 +129,11 @@ public class AiToolsConfig {
             Map<String, Object> result = new HashMap<>();
             if (type == null) {
                 DocumentListVO resourceDocs = documentService.listTeamDocuments(identity.userId(), identity.teamId(), DOCUMENT_TYPE_RESOURCE);
-                DocumentListVO agentDocs = documentService.listTeamDocuments(identity.userId(), identity.teamId(), DOCUMENT_TYPE_AGENT);
+                DocumentListVO collabDocs = documentService.listTeamDocuments(identity.userId(), identity.teamId(), DOCUMENT_TYPE_COLLAB);
                 result.put("resourceDocuments", sanitizeDocuments(resourceDocs.getDocuments()));
-                result.put("agentDocuments", sanitizeDocuments(agentDocs.getDocuments()));
+                result.put("collaborationDocuments", sanitizeDocuments(collabDocs.getDocuments()));
                 result.put("currentUserCanUploadResource", resourceDocs.getCurrentUserCanUpload());
-                result.put("currentUserCanUploadAgent", agentDocs.getCurrentUserCanUpload());
+                result.put("currentUserCanUploadCollaboration", collabDocs.getCurrentUserCanUpload());
                 return result;
             }
             DocumentListVO documents = documentService.listTeamDocuments(identity.userId(), identity.teamId(), type);

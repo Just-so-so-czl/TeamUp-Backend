@@ -34,10 +34,11 @@ import org.springframework.web.multipart.MultipartFile;
 @Service
 @Slf4j
 @RequiredArgsConstructor
-public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> implements IDocumentService {
+public class  DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> implements IDocumentService {
 
     private static final int TYPE_RESOURCE = 1;
-    private static final int TYPE_AGENT = 3;
+    private static final int TYPE_COLLAB = 2;
+    private static final String COLLAB_PLACEHOLDER_FILE_TYPE = "collab";
     private static final Set<String> ALLOWED_FILE_TYPES = Set.of("pdf", "docx", "md", "txt");
     private static final DateTimeFormatter MENTOR_DATE_FMT = DateTimeFormatter.ofPattern("MM/dd");
 
@@ -64,22 +65,24 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
         }
 
         List<Long> creatorIds = documents.stream().map(Document::getCreatorId).distinct().toList();
-        Map<Long, String> userNameMap = userMapper.selectList(new LambdaQueryWrapper<User>().in(User::getId, creatorIds))
+        Map<Long, User> userMap = userMapper.selectList(new LambdaQueryWrapper<User>().in(User::getId, creatorIds))
             .stream()
-            .collect(Collectors.toMap(User::getId, User::getUsername));
+            .collect(Collectors.toMap(User::getId, user -> user));
 
         List<DocumentItemVO> items = documents.stream().map(doc -> DocumentItemVO.builder()
             .documentId(doc.getId())
             .teamId(doc.getTeamId())
             .title(doc.getTitle())
             .type(doc.getType())
-            .typeName(doc.getType() != null && doc.getType() == TYPE_RESOURCE ? "资料文档" : "Agent文档")
+            .typeName(doc.getType() != null && doc.getType() == TYPE_RESOURCE ? "资料文档" : "协作文档")
             .storagePath(doc.getStoragePath())
             .fileType(doc.getFileType())
             .fileSize(doc.getFileSize())
             .creatorId(doc.getCreatorId())
-            .creatorName(userNameMap.getOrDefault(doc.getCreatorId(), "未知用户"))
+            .creatorName(resolveUserName(userMap, doc.getCreatorId()))
+            .creatorAvatar(resolveUserAvatar(userMap, doc.getCreatorId()))
             .createTime(doc.getCreateTime())
+            .updateTime(doc.getUpdateTime())
             .build()).toList();
 
         return DocumentListVO.builder()
@@ -96,7 +99,7 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
         if (!canUpload(member, type)) {
             throw new BizException(403, "当前角色无权限上传该类型文档");
         }
-        if (file == null || file.isEmpty()) {
+        if (file == null || file.getOriginalFilename() == null || file.getOriginalFilename().trim().isEmpty()) {
             throw new BizException(400, "上传文件不能为空");
         }
 
@@ -131,6 +134,32 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    public void createCollaborationDocument(Long currentUserId, Long teamId, String title) {
+        TeamMember member = validateMembership(currentUserId, teamId);
+        if (!canUpload(member, TYPE_COLLAB)) {
+            throw new BizException(403, "当前角色无权限创建协作文档");
+        }
+
+        String validTitle = validateTitle(title);
+        LocalDateTime now = LocalDateTime.now();
+
+        Document doc = new Document();
+        doc.setTeamId(teamId);
+        doc.setTitle(validTitle);
+        doc.setType(TYPE_COLLAB);
+        doc.setStoragePath("");
+        doc.setFileType(COLLAB_PLACEHOLDER_FILE_TYPE);
+        doc.setFileSize(0L);
+        doc.setCreatorId(currentUserId);
+        doc.setCreateTime(now);
+        doc.setUpdateTime(now);
+        this.save(doc);
+
+        log.info("Collaboration document created, teamId={}, documentId={}, operatorUserId={}", teamId, doc.getId(), currentUserId);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
     public void updateDocumentTitle(Long currentUserId, Long documentId, String title) {
         Document document = getDocumentById(documentId);
         TeamMember member = validateMembership(currentUserId, document.getTeamId());
@@ -138,12 +167,7 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
             throw new BizException(403, "当前角色无权限修改该类型文档");
         }
 
-        String validTitle = title == null ? "" : title.trim();
-        if (validTitle.length() < 1 || validTitle.length() > 200) {
-            throw new BizException(400, "文档标题长度需在1到200个字符之间");
-        }
-
-        document.setTitle(validTitle);
+        document.setTitle(validateTitle(title));
         document.setUpdateTime(LocalDateTime.now());
         this.updateById(document);
     }
@@ -156,7 +180,9 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
         if (!canUpload(member, document.getType())) {
             throw new BizException(403, "当前角色无权限删除该类型文档");
         }
-        ossService.delete(document.getStoragePath());
+        if (document.getStoragePath() != null && !document.getStoragePath().isBlank()) {
+            ossService.delete(document.getStoragePath());
+        }
         this.removeById(documentId);
     }
 
@@ -164,6 +190,9 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
     public String generateDownloadUrl(Long currentUserId, Long documentId) {
         Document document = getDocumentById(documentId);
         validateMembership(currentUserId, document.getTeamId());
+        if (document.getStoragePath() == null || document.getStoragePath().isBlank()) {
+            throw new BizException(400, "该协作文档内容暂未接入查看或下载");
+        }
 
         String fileName = document.getTitle();
         String fileType = document.getFileType();
@@ -239,7 +268,7 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
     }
 
     private void validateDocumentType(Integer type) {
-        if (type == null || (type != TYPE_RESOURCE && type != TYPE_AGENT)) {
+        if (type == null || (type != TYPE_RESOURCE && type != TYPE_COLLAB)) {
             throw new BizException(400, "文档类型不合法");
         }
     }
@@ -255,8 +284,32 @@ public class DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> i
         return role == TeamMemberRoleEnum.CAPTAIN || role == TeamMemberRoleEnum.LEADER;
     }
 
+    private String validateTitle(String title) {
+        String validTitle = title == null ? "" : title.trim();
+        if (validTitle.length() < 1 || validTitle.length() > 200) {
+            throw new BizException(400, "文档标题长度需在1到200个字符之间");
+        }
+        return validTitle;
+    }
+
+    private String resolveUserName(Map<Long, User> userMap, Long userId) {
+        User user = userMap.get(userId);
+        if (user == null || user.getUsername() == null || user.getUsername().isBlank()) {
+            return "未知用户";
+        }
+        return user.getUsername();
+    }
+
+    private Integer resolveUserAvatar(Map<Long, User> userMap, Long userId) {
+        User user = userMap.get(userId);
+        if (user == null || user.getAvatar() == null) {
+            return 1;
+        }
+        return user.getAvatar();
+    }
+
     private String buildObjectKey(Long teamId, Integer type, String ext) {
-        String typeName = type != null && type == TYPE_RESOURCE ? "resource" : "agent";
+        String typeName = type != null && type == TYPE_RESOURCE ? "resource" : "collaboration";
         String ts = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
         return "team/" + teamId + "/" + typeName + "/" + ts + "-" + System.nanoTime() + "." + ext;
     }

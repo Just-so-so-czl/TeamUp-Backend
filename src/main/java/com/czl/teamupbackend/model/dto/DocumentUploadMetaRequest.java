@@ -13,7 +13,7 @@ public class DocumentUploadMetaRequest {
     @Schema(description = "文档标题")
     private String title;
 
-    @Schema(description = "文档类型：1-资料文档 3-Agent文档")
+    @Schema(description = "文档类型：1-资料文档 2-协作文档")
     private Integer type;
 }
 

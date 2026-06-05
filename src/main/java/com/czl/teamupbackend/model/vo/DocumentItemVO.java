@@ -28,6 +28,10 @@ public class DocumentItemVO {
 
     private String creatorName;
 
+    private Integer creatorAvatar;
+
     private LocalDateTime createTime;
+
+    private LocalDateTime updateTime;
 }
 
