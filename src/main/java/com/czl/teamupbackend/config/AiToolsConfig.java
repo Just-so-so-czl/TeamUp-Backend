@@ -46,6 +46,16 @@ public class AiToolsConfig {
     ) {
         return (request, toolContext) -> {
             ToolIdentity identity = resolveIdentity(request, toolContext, "查询小组概览失败");
+            try {
+                teamService.validateTeamAccessible(identity.userId(), identity.teamId());
+            } catch (BizException e) {
+                if (isInvalidTeamContext(e)) {
+                    log.warn("AI tool queryTeamOverview skipped due to invalid team context, userId={}, teamId={}, message={}",
+                        identity.userId(), identity.teamId(), e.getMessage());
+                    return buildInvalidTeamOverview(identity.teamId(), e.getMessage());
+                }
+                throw e;
+            }
             TeamDetailVO detail = teamService.getTeamDetail(identity.userId(), buildTeamDetailRequest(identity.teamId()));
             TeamMembersManageVO members = teamMemberService.getTeamMembersManage(identity.userId(), identity.teamId());
             TeamTaskListVO taskLists = taskListService.listTeamTaskLists(identity.userId(), identity.teamId());
@@ -76,9 +86,22 @@ public class AiToolsConfig {
 
     @Bean
     @Description("获取当前小组成员信息，包括成员姓名、角色、职责描述、加入时间，以及当前用户在小组中的角色")
-    public BiFunction<TeamIdToolRequest, ToolContext, Map<String, Object>> queryTeamMembers(ITeamMemberService teamMemberService) {
+    public BiFunction<TeamIdToolRequest, ToolContext, Map<String, Object>> queryTeamMembers(
+        ITeamMemberService teamMemberService,
+        ITeamService teamService
+    ) {
         return (request, toolContext) -> {
             ToolIdentity identity = resolveIdentity(request, toolContext, "查询小组成员失败");
+            try {
+                teamService.validateTeamAccessible(identity.userId(), identity.teamId());
+            } catch (BizException e) {
+                if (isInvalidTeamContext(e)) {
+                    log.warn("AI tool queryTeamMembers skipped due to invalid team context, userId={}, teamId={}, message={}",
+                        identity.userId(), identity.teamId(), e.getMessage());
+                    return buildInvalidTeamMembers(identity.teamId(), e.getMessage());
+                }
+                throw e;
+            }
             TeamMembersManageVO members = teamMemberService.getTeamMembersManage(identity.userId(), identity.teamId());
             Map<String, Object> result = new HashMap<>();
             result.put("currentUserRoleName", members.getCurrentUserRoleName());
@@ -91,7 +114,10 @@ public class AiToolsConfig {
 
     @Bean
     @Description("获取/查询当前小组下的所有任务清单以及清单里的所有具体子任务项，包含清单截止时间、描述、进度百分比、各个子任务的负责人、状态和子任务截止时间等详细信息")
-    public BiFunction<TeamIdToolRequest, ToolContext, TeamTaskListVO> queryTeamTaskLists(ITaskListService taskListService) {
+    public BiFunction<TeamIdToolRequest, ToolContext, TeamTaskListVO> queryTeamTaskLists(
+        ITaskListService taskListService,
+        ITeamService teamService
+    ) {
         return (request, toolContext) -> {
             Long userId = getLongValue(toolContext, TOOL_CTX_USER_ID);
             if (userId == null) {
@@ -112,6 +138,16 @@ public class AiToolsConfig {
                 request == null ? null : request.getTeamId(),
                 toolContext == null ? null : toolContext.getContext().keySet());
             try {
+                teamService.validateTeamAccessible(userId, teamId);
+            } catch (BizException e) {
+                if (isInvalidTeamContext(e)) {
+                    log.warn("AI tool queryTeamTaskLists skipped due to invalid team context, userId={}, teamId={}, message={}",
+                        userId, teamId, e.getMessage());
+                    return buildInvalidTeamTaskLists();
+                }
+                throw e;
+            }
+            try {
                 return taskListService.listTeamTaskLists(userId, teamId);
             } catch (Exception e) {
                 log.error("Error executing queryTeamTaskLists for AI, userId={}, teamId={}", userId, teamId, e);
@@ -122,9 +158,22 @@ public class AiToolsConfig {
 
     @Bean
     @Description("获取当前小组文档列表，可按文档类型筛选：1 表示资料文档，2 表示协作文档；不传类型时返回两类文档")
-    public BiFunction<AiTeamDocumentsToolRequest, ToolContext, Map<String, Object>> queryTeamDocuments(IDocumentService documentService) {
+    public BiFunction<AiTeamDocumentsToolRequest, ToolContext, Map<String, Object>> queryTeamDocuments(
+        IDocumentService documentService,
+        ITeamService teamService
+    ) {
         return (request, toolContext) -> {
             ToolIdentity identity = resolveIdentity(request, toolContext, "查询小组文档失败");
+            try {
+                teamService.validateTeamAccessible(identity.userId(), identity.teamId());
+            } catch (BizException e) {
+                if (isInvalidTeamContext(e)) {
+                    log.warn("AI tool queryTeamDocuments skipped due to invalid team context, userId={}, teamId={}, message={}",
+                        identity.userId(), identity.teamId(), e.getMessage());
+                    return buildInvalidTeamDocuments(request == null ? null : request.getType(), identity.teamId(), e.getMessage());
+                }
+                throw e;
+            }
             Integer type = request == null ? null : request.getType();
             Map<String, Object> result = new HashMap<>();
             if (type == null) {
@@ -258,6 +307,64 @@ public class AiToolsConfig {
             }
         }
         return null;
+    }
+
+    private boolean isInvalidTeamContext(BizException e) {
+        if (e == null || e.getCode() == null) {
+            return false;
+        }
+        return e.getCode() == 403 || e.getCode() == 404;
+    }
+
+    private Map<String, Object> buildInvalidTeamOverview(Long teamId, String message) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("teamContextValid", false);
+        result.put("message", "当前小组上下文已失效：" + message);
+        result.put("team", Map.of("teamId", teamId == null ? "" : String.valueOf(teamId)));
+        result.put("currentUserRole", Map.of("roleName", "", "roleDesc", ""));
+        result.put("memberCount", 0);
+        result.put("taskListCount", 0);
+        result.put("taskCount", 0);
+        result.put("unfinishedTaskCount", 0);
+        result.put("resourceDocumentCount", 0);
+        result.put("collaborationDocumentCount", 0);
+        return result;
+    }
+
+    private Map<String, Object> buildInvalidTeamMembers(Long teamId, String message) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("teamContextValid", false);
+        result.put("teamId", teamId);
+        result.put("message", "当前小组上下文已失效：" + message);
+        result.put("currentUserRoleName", "");
+        result.put("currentUserRoleDesc", "");
+        result.put("currentUserCaptain", false);
+        result.put("members", List.of());
+        return result;
+    }
+
+    private TeamTaskListVO buildInvalidTeamTaskLists() {
+        return TeamTaskListVO.builder()
+            .currentUserCanCreate(false)
+            .taskLists(List.of())
+            .build();
+    }
+
+    private Map<String, Object> buildInvalidTeamDocuments(Integer type, Long teamId, String message) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("teamContextValid", false);
+        result.put("teamId", teamId);
+        result.put("message", "当前小组上下文已失效：" + message);
+        if (type == null) {
+            result.put("resourceDocuments", List.of());
+            result.put("collaborationDocuments", List.of());
+            result.put("currentUserCanUploadResource", false);
+            result.put("currentUserCanUploadCollaboration", false);
+            return result;
+        }
+        result.put("documents", List.of());
+        result.put("currentUserCanUpload", false);
+        return result;
     }
 
     private record ToolIdentity(Long userId, Long teamId) {

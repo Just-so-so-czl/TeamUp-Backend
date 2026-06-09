@@ -67,14 +67,14 @@ public class AiChatMessageIndex implements Serializable {
     private String traceId;
 
     /**
-     * 输入token数
+     * token用量
      */
-    private Integer tokenInput;
+    private Integer tokenCount;
 
     /**
-     * 输出token数
+     * 是否仍属于当前短期记忆窗口:0=否,1=是
      */
-    private Integer tokenOutput;
+    private Integer shortTermActive;
 
     /**
      * 状态:1=PENDING,2=DONE,3=FAILED

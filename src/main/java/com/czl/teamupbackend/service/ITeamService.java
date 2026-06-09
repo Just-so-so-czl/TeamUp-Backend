@@ -22,5 +22,7 @@ public interface ITeamService extends IService<Team> {
 
     TeamDetailVO getTeamDetail(Long userId, TeamDetailRequest request);
 
+    void validateTeamAccessible(Long userId, Long teamId);
+
     void updateTeamInfo(Long userId, TeamUpdateRequest request);
 }

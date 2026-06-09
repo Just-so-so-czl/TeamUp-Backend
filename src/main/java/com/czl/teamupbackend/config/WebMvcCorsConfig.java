@@ -23,6 +23,18 @@ public class WebMvcCorsConfig implements WebMvcConfigurer {
         return executor;
     }
 
+    @Bean(name = "memoryLifecycleExecutor")
+    public AsyncTaskExecutor memoryLifecycleExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setThreadNamePrefix("memory-lifecycle-");
+        executor.setCorePoolSize(4);
+        executor.setMaxPoolSize(16);
+        executor.setQueueCapacity(200);
+        executor.setKeepAliveSeconds(60);
+        executor.initialize();
+        return executor;
+    }
+
     @Override
     public void addCorsMappings(CorsRegistry registry) {
         registry.addMapping("/**")

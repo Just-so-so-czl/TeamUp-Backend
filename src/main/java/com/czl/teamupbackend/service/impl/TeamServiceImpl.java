@@ -102,6 +102,28 @@ public class TeamServiceImpl extends ServiceImpl<TeamMapper, Team> implements IT
     }
 
     @Override
+    public void validateTeamAccessible(Long userId, Long teamId) {
+        if (userId == null || userId <= 0) {
+            throw new BizException(401, "未登录");
+        }
+        if (teamId == null || teamId <= 0) {
+            throw new BizException(400, "小组ID不合法");
+        }
+        Team team = getById(teamId);
+        if (team == null) {
+            throw new BizException(404, "小组不存在");
+        }
+        boolean isMember = teamMemberMapper.selectCount(
+            new LambdaQueryWrapper<TeamMember>()
+                .eq(TeamMember::getTeamId, teamId)
+                .eq(TeamMember::getUserId, userId)
+        ) > 0;
+        if (!isMember) {
+            throw new BizException(403, "你不是该小组成员");
+        }
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public void updateTeamInfo(Long userId, TeamUpdateRequest request) {
         if (userId == null || userId <= 0) {

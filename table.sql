@@ -262,8 +262,8 @@ CREATE TABLE IF NOT EXISTS ai_chat_message_index (
     message_type      VARCHAR(32)  NOT NULL DEFAULT 'TEXT' COMMENT '消息类型:TEXT/TASK_SUGGESTION/SUMMARY/MEMORY_REF',
     mongo_message_id  VARCHAR(64)  NOT NULL COMMENT 'Mongo文档ID',
     trace_id          VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '链路追踪ID',
-    token_input       INT          NOT NULL DEFAULT 0 COMMENT '输入token数',
-    token_output      INT          NOT NULL DEFAULT 0 COMMENT '输出token数',
+    token_count       INT          NOT NULL DEFAULT 0 COMMENT '消息token数',
+    short_term_active TINYINT      NOT NULL DEFAULT 1 COMMENT '是否仍属于当前短期记忆窗口:0=否,1=是',
     status            TINYINT      NOT NULL DEFAULT 1 COMMENT '状态:1=PENDING,2=DONE,3=FAILED',
     error_msg         VARCHAR(512) NOT NULL DEFAULT '' COMMENT '失败原因',
     deleted           TINYINT      NOT NULL DEFAULT 0 COMMENT '逻辑删除:0=否,1=是',
@@ -272,7 +272,45 @@ CREATE TABLE IF NOT EXISTS ai_chat_message_index (
     PRIMARY KEY (id),
     KEY idx_session_created_at (session_id, created_at),
     KEY idx_session_status_deleted (session_id, status, deleted),
+    KEY idx_session_short_term_active (session_id, short_term_active),
     KEY idx_team_created_at (team_id, created_at),
     KEY idx_trace_id (trace_id),
     UNIQUE KEY uk_mongo_message_id (mongo_message_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI导师对话消息索引表';
+
+CREATE TABLE IF NOT EXISTS ai_chat_memory_state (
+                                                    id                      BIGINT       NOT NULL COMMENT '记忆状态ID(雪花ID)',
+                                                    session_id              BIGINT       NOT NULL COMMENT '会话ID',
+                                                    team_id                 BIGINT       NOT NULL COMMENT '小组ID',
+                                                    short_term_token_count  INT          NOT NULL DEFAULT 0 COMMENT '当前短期窗口总token',
+                                                    short_term_message_count INT         NOT NULL DEFAULT 0 COMMENT '当前短期窗口消息数',
+                                                    mid_term_mongo_id       VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '中期记忆Mongo文档ID',
+                                                    mid_term_token_count    INT          NOT NULL DEFAULT 0 COMMENT '中期记忆总token',
+                                                    last_mid_term_compress_at DATETIME   NULL COMMENT '最近一次中期压缩时间',
+                                                    last_mid_term_source_token_count INT NOT NULL DEFAULT 0 COMMENT '最近一次中期压缩前短期token',
+                                                    last_mid_term_target_token_count INT NOT NULL DEFAULT 0 COMMENT '最近一次中期压缩后短期token',
+                                                    last_mid_term_summary_token_count INT NOT NULL DEFAULT 0 COMMENT '最近一次中期摘要token',
+                                                    last_mid_term_removed_message_count INT NOT NULL DEFAULT 0 COMMENT '最近一次中期移除消息数',
+                                                    last_mid_term_removed_message_ids VARCHAR(512) NOT NULL DEFAULT '' COMMENT '最近一次中期移除消息ID列表',
+                                                    last_mid_term_status    VARCHAR(32)  NOT NULL DEFAULT '' COMMENT '最近一次中期压缩状态',
+                                                    last_mid_term_error_msg VARCHAR(512) NOT NULL DEFAULT '' COMMENT '最近一次中期压缩错误',
+                                                    early_term_mongo_id     VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '早期记忆Mongo文档ID',
+                                                    early_term_token_count  INT          NOT NULL DEFAULT 0 COMMENT '早期记忆总token',
+                                                    last_early_term_compress_at DATETIME NULL COMMENT '最近一次早期压缩时间',
+                                                    last_early_term_source_token_count INT NOT NULL DEFAULT 0 COMMENT '最近一次早期压缩前中期token',
+                                                    last_early_term_target_token_count INT NOT NULL DEFAULT 0 COMMENT '最近一次早期压缩后中期token',
+                                                    last_early_term_summary_token_count INT NOT NULL DEFAULT 0 COMMENT '最近一次早期摘要token',
+                                                    last_early_term_removed_segment_count INT NOT NULL DEFAULT 0 COMMENT '最近一次早期移除段数',
+                                                    last_early_term_removed_token_count INT NOT NULL DEFAULT 0 COMMENT '最近一次早期移除token',
+                                                    last_early_term_status  VARCHAR(32)  NOT NULL DEFAULT '' COMMENT '最近一次早期压缩状态',
+                                                    last_early_term_error_msg VARCHAR(512) NOT NULL DEFAULT '' COMMENT '最近一次早期压缩错误',
+                                                    created_at              DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                                                    updated_at              DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                                                    PRIMARY KEY (id),
+                                                    UNIQUE KEY uk_session_id (session_id),
+                                                    KEY idx_team_id (team_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI导师记忆生命周期状态表';
+
+ALTER TABLE ai_chat_memory_state
+    ADD COLUMN last_mid_term_compress_at DATETIME NULL COMMENT '最近一次中期压缩时间'
+        AFTER mid_term_token_count;
