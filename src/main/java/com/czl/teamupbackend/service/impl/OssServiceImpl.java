@@ -3,6 +3,7 @@ package com.czl.teamupbackend.service.impl;
 import com.aliyun.oss.OSS;
 import com.aliyun.oss.OSSClientBuilder;
 import com.aliyun.oss.HttpMethod;
+import com.aliyun.oss.model.ObjectMetadata;
 import com.aliyun.oss.model.PutObjectRequest;
 import com.aliyun.oss.model.ResponseHeaderOverrides;
 import com.aliyun.oss.model.GeneratePresignedUrlRequest;
@@ -25,6 +26,11 @@ public class OssServiceImpl implements IOssService {
 
     @Override
     public String upload(String objectKey, MultipartFile file) {
+        return upload(objectKey, file, file == null ? null : file.getContentType());
+    }
+
+    @Override
+    public String upload(String objectKey, MultipartFile file, String contentType) {
         OSS ossClient = null;
         try {
             ossClient = new OSSClientBuilder().build(
@@ -32,11 +38,17 @@ public class OssServiceImpl implements IOssService {
                 ossProperties.getAccessKeyId(),
                 ossProperties.getAccessKeySecret()
             );
-            ossClient.putObject(new PutObjectRequest(
+            PutObjectRequest request = new PutObjectRequest(
                 ossProperties.getBucketName(),
                 objectKey,
                 file.getInputStream()
-            ));
+            );
+            if (contentType != null && !contentType.trim().isEmpty()) {
+                ObjectMetadata metadata = new ObjectMetadata();
+                metadata.setContentType(contentType.trim());
+                request.setMetadata(metadata);
+            }
+            ossClient.putObject(request);
             return buildObjectUrl(objectKey);
         } catch (Exception e) {
             log.error("OSS upload failed, objectKey={}", objectKey, e);

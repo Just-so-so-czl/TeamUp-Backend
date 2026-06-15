@@ -6,6 +6,8 @@ public interface IOssService {
 
     String upload(String objectKey, MultipartFile file);
 
+    String upload(String objectKey, MultipartFile file, String contentType);
+
     void delete(String objectKeyOrUrl);
 
     String generateDownloadUrl(String objectKeyOrUrl, String downloadFileName);
