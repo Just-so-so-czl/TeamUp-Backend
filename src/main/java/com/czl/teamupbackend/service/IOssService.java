@@ -11,4 +11,6 @@ public interface IOssService {
     void delete(String objectKeyOrUrl);
 
     String generateDownloadUrl(String objectKeyOrUrl, String downloadFileName);
+
+    String generateDownloadUrl(String objectKeyOrUrl, String downloadFileName, long expireMillis);
 }

@@ -16,6 +16,8 @@ import org.springframework.web.multipart.MultipartFile;
 @RequiredArgsConstructor
 public class ImageUploadServiceImpl implements IImageUploadService {
 
+    private static final long IMAGE_SIGNED_URL_EXPIRE_MILLIS = 60 * 60 * 1000L;
+
     private static final Set<String> ALLOWED_CONTENT_TYPES = Set.of(
         "image/png",
         "image/jpeg",
@@ -43,9 +45,23 @@ public class ImageUploadServiceImpl implements IImageUploadService {
 
         String fileExt = resolveImageExtension(file.getOriginalFilename(), contentType);
         String objectKey = buildObjectKey(currentUserId, fileExt);
-        String imageUrl = ossService.upload(objectKey, file, contentType);
+        ossService.upload(objectKey, file, contentType);
         log.info("Image uploaded, userId={}, objectKey={}", currentUserId, objectKey);
-        return imageUrl;
+        return objectKey;
+    }
+
+    @Override
+    public String generateSignedImageUrl(Long currentUserId, String objectKey) {
+        if (currentUserId == null || currentUserId <= 0) {
+            throw new BizException(401, "未登录");
+        }
+        if (objectKey == null || objectKey.trim().isEmpty()) {
+            throw new BizException(400, "图片ObjectKey不能为空");
+        }
+        String normalizedObjectKey = objectKey.trim();
+        String signedUrl = ossService.generateDownloadUrl(normalizedObjectKey, null, IMAGE_SIGNED_URL_EXPIRE_MILLIS);
+        log.info("Image signed url generated, userId={}, objectKey={}", currentUserId, normalizedObjectKey);
+        return signedUrl;
     }
 
     private String buildObjectKey(Long currentUserId, String fileExt) {

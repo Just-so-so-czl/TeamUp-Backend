@@ -5,7 +5,9 @@ import lombok.Data;
 
 @Data
 @Builder
-public class ImageUploadVO {
+public class ImageSignedUrlVO {
 
-    private String objectKey;
+    private String url;
+
+    private Long expiresAt;
 }

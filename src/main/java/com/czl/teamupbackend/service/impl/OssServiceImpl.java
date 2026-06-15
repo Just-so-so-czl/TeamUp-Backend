@@ -83,6 +83,11 @@ public class OssServiceImpl implements IOssService {
 
     @Override
     public String generateDownloadUrl(String objectKeyOrUrl, String downloadFileName) {
+        return generateDownloadUrl(objectKeyOrUrl, downloadFileName, 5 * 60 * 1000L);
+    }
+
+    @Override
+    public String generateDownloadUrl(String objectKeyOrUrl, String downloadFileName, long expireMillis) {
         String objectKey = toObjectKey(objectKeyOrUrl);
         OSS ossClient = null;
         try {
@@ -91,7 +96,7 @@ public class OssServiceImpl implements IOssService {
                 ossProperties.getAccessKeyId(),
                 ossProperties.getAccessKeySecret()
             );
-            Date expiration = new Date(System.currentTimeMillis() + 5 * 60 * 1000L);
+            Date expiration = new Date(System.currentTimeMillis() + Math.max(60 * 1000L, expireMillis));
             GeneratePresignedUrlRequest request = new GeneratePresignedUrlRequest(
                 ossProperties.getBucketName(),
                 objectKey,

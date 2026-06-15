@@ -5,4 +5,6 @@ import org.springframework.web.multipart.MultipartFile;
 public interface IImageUploadService {
 
     String uploadImage(Long currentUserId, MultipartFile file);
+
+    String generateSignedImageUrl(Long currentUserId, String objectKey);
 }
