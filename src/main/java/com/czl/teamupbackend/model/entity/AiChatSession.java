@@ -47,6 +47,16 @@ public class AiChatSession implements Serializable {
     private String title;
 
     /**
+     * 会话类型:TEAM_MENTOR=小组导师,COLLAB_DOC=协作文档助手
+     */
+    private String sessionType;
+
+    /**
+     * 关联协作文档ID，仅协作文档助手会话使用
+     */
+    private Long documentId;
+
+    /**
      * 状态:1=进行中,2=已关闭
      */
     private Integer status;

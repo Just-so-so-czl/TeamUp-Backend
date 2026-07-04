@@ -1,6 +1,7 @@
 package com.czl.teamupbackend.model.vo;
 
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import io.swagger.v3.oas.annotations.media.Schema;
 import java.time.LocalDateTime;
@@ -30,6 +31,10 @@ public class TeamMemberManageItemVO {
 
     @Schema(description = "角色描述")
     private String roleDesc;
+
+    @Schema(description = "数据库角色描述字段")
+    @JsonProperty("role_description")
+    private String roleDescription;
 
     @Schema(description = "头像编号")
     private Integer avatar;

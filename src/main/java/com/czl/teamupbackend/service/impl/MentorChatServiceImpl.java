@@ -31,7 +31,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -42,6 +44,7 @@ import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tokenizer.TokenCountEstimator;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -54,6 +57,7 @@ public class MentorChatServiceImpl implements IMentorChatService {
     private static final String EVENT_CHUNK = "chunk";
     private static final String EVENT_DONE = "done";
     private static final String EVENT_META = "meta";
+    private static final String EVENT_TITLE = "title";
     private static final String SENDER_USER = "USER";
     private static final String SENDER_ASSISTANT = "ASSISTANT";
     private static final String MSG_TYPE_TEXT = "TEXT";
@@ -61,11 +65,15 @@ public class MentorChatServiceImpl implements IMentorChatService {
     private static final int STATUS_DONE = 2;
     private static final int STATUS_FAILED = 3;
     private static final String DEFAULT_SESSION_TITLE = "智能导师对话";
+    private static final String DEFAULT_COLLAB_SESSION_TITLE = "文档助手对话";
+    private static final String SESSION_TYPE_TEAM_MENTOR = "TEAM_MENTOR";
+    private static final String SESSION_TYPE_COLLAB_DOC = "COLLAB_DOC";
     private static final int SESSION_TITLE_PREFIX_MAX = 18;
     private static final String TOOL_CTX_USER_ID = "userId";
     private static final String TOOL_CTX_TEAM_ID = "teamId";
-    private static final String SYSTEM_PROMPT = "你是 TeamUp 平台的智能导师，请给出清晰、可执行、简洁的中文建议。";
+    private static final String SYSTEM_PROMPT = "你是 TeamUp 平台的智能导师，负责大学生小组协作的助手,解答用户提出的小组协作的问题和小组任务中的知识性问题";
     private static final int HISTORY_WINDOW_MAX_TOKENS = 4000;
+    private static final int TITLE_GENERATION_TIMEOUT_SECONDS = 15;
     private static final Duration MESSAGE_TOKEN_CACHE_TTL = Duration.ofDays(7);
     private static final String REDIS_MSG_TOKEN_KEY_PREFIX = "chat:msg:token:";
     private static final String HISTORY_PROMPT_PREFIX = """
@@ -85,6 +93,9 @@ public class MentorChatServiceImpl implements IMentorChatService {
     private final MemoryLifecycleService memoryLifecycleService;
     private final ITeamService teamService;
 
+    @Value("${spring.ai.openai.summary.model}")
+    private String summaryModel;
+
     @Override
     public SseEmitter streamChat(Long userId, MentorChatRequest request) {
         if (userId == null) {
@@ -98,9 +109,10 @@ public class MentorChatServiceImpl implements IMentorChatService {
             throw new BizException(400, "消息内容不能为空");
         }
         teamService.validateTeamAccessible(userId, request.getTeamId());
+        validateSessionScope(resolveSessionType(request.getSessionType()), request.getDocumentId());
 
         AiChatSession session = getOrCreateSession(userId, request);
-        updateSessionTitleByFirstQuestion(session, message);
+        boolean shouldGenerateTitle = isFirstRoundSession(session);
         String traceId = UUID.randomUUID().toString().replace("-", "");
         LocalDateTime now = LocalDateTime.now();
         int currentPromptTokenCount = estimateUserPromptTokenCount(message);
@@ -124,14 +136,15 @@ public class MentorChatServiceImpl implements IMentorChatService {
         String historyPrompt = buildSlidingWindowHistoryPrompt(session.getId(), userMsgIndex.getId());
         mvcAsyncTaskExecutor.execute(() -> doStream(
             emitter, message, historyPrompt,
-            session, traceId, assistantMsgIndex, assistantMongoId, toolContext));
+            session, traceId, assistantMsgIndex, assistantMongoId, toolContext, shouldGenerateTitle));
         return emitter;
     }
 
     private void doStream(SseEmitter emitter, String message, String historyPrompt,
                           AiChatSession session, String traceId,
                           AiChatMessageIndex assistantMsgIndex, String assistantMongoId,
-                          Map<String, Object> toolContext) {
+                          Map<String, Object> toolContext,
+                          boolean shouldGenerateTitle) {
         StringBuilder assistantFullText = new StringBuilder();
         UsageUsageHolder usageHolder = new UsageUsageHolder();
         try {
@@ -180,12 +193,14 @@ public class MentorChatServiceImpl implements IMentorChatService {
                     memoryLifecycleService.onShortTermMessageAdded(assistantMsgIndex);
                     refreshSessionStats(session.getId(), endAt);
                     cacheRecentContext(session.getId());
-                    try {
-                        emitter.send(SseEmitter.event().name(EVENT_DONE).data("[DONE]"));
-                    } catch (IOException ignored) {
-                        // Client may close the connection after receiving the last chunk.
-                    }
-                    emitter.complete();
+                    completeStreamAfterOptionalTitle(
+                        emitter,
+                        session,
+                        message,
+                        assistantFullText.toString(),
+                        traceId,
+                        shouldGenerateTitle
+                    );
                 })
                 .doOnError(ex -> {
                     markMsgFailed(assistantMsgIndex.getId(), ex.getMessage());
@@ -211,13 +226,23 @@ public class MentorChatServiceImpl implements IMentorChatService {
             throw new BizException(400, "teamId 不能为空");
         }
         teamService.validateTeamAccessible(userId, request.getTeamId());
-        List<AiChatSession> sessions = aiChatSessionService.list(new LambdaQueryWrapper<AiChatSession>()
+        String sessionType = resolveSessionType(request.getSessionType());
+        Long documentId = normalizeDocumentId(request.getDocumentId());
+        validateSessionScope(sessionType, documentId);
+        LambdaQueryWrapper<AiChatSession> queryWrapper = new LambdaQueryWrapper<AiChatSession>()
             .eq(AiChatSession::getCreatorUserId, userId)
             .eq(AiChatSession::getTeamId, request.getTeamId())
             .eq(AiChatSession::getDeleted, 0)
-            .orderByDesc(AiChatSession::getLastMessageAt));
-        log.info("Mentor session list query done userId={}, teamId={}, dbSessionCount={}",
-            userId, request.getTeamId(), sessions == null ? 0 : sessions.size());
+            .eq(AiChatSession::getSessionType, sessionType);
+        if (SESSION_TYPE_COLLAB_DOC.equals(sessionType)) {
+            queryWrapper.eq(AiChatSession::getDocumentId, documentId);
+        } else {
+            queryWrapper.isNull(AiChatSession::getDocumentId);
+        }
+        queryWrapper.orderByDesc(AiChatSession::getLastMessageAt);
+        List<AiChatSession> sessions = aiChatSessionService.list(queryWrapper);
+        log.info("Mentor session list query done userId={}, teamId={}, sessionType={}, documentId={}, dbSessionCount={}",
+            userId, request.getTeamId(), sessionType, documentId, sessions == null ? 0 : sessions.size());
         List<MentorSessionItemVO> items = sessions.stream()
             .map(s -> MentorSessionItemVO.builder()
                 .sessionId(String.valueOf(s.getId()))
@@ -289,11 +314,14 @@ public class MentorChatServiceImpl implements IMentorChatService {
             throw new BizException(400, "teamId 不能为空");
         }
         teamService.validateTeamAccessible(userId, request.getTeamId());
+        String sessionType = resolveSessionType(request.getSessionType());
+        Long documentId = normalizeDocumentId(request.getDocumentId());
+        validateSessionScope(sessionType, documentId);
         String title = request.getTitle() == null ? "" : request.getTitle().trim();
         if (title.isEmpty()) {
-            title = DEFAULT_SESSION_TITLE;
+            title = SESSION_TYPE_COLLAB_DOC.equals(sessionType) ? DEFAULT_COLLAB_SESSION_TITLE : DEFAULT_SESSION_TITLE;
         }
-        AiChatSession session = createSessionRecord(userId, request.getTeamId(), title);
+        AiChatSession session = createSessionRecord(userId, request.getTeamId(), title, sessionType, documentId);
         return MentorSessionItemVO.builder()
             .sessionId(String.valueOf(session.getId()))
             .title(session.getTitle())
@@ -304,34 +332,186 @@ public class MentorChatServiceImpl implements IMentorChatService {
     }
 
     private AiChatSession getOrCreateSession(Long userId, MentorChatRequest request) {
+        String sessionType = resolveSessionType(request.getSessionType());
+        Long documentId = normalizeDocumentId(request.getDocumentId());
         if (request.getSessionId() != null) {
             AiChatSession exist = aiChatSessionService.getById(request.getSessionId());
-            if (exist == null || !request.getTeamId().equals(exist.getTeamId()) || !userId.equals(exist.getCreatorUserId())) {
-                log.warn("Ignore invalid mentor sessionId={}, userId={}, teamId={}",
-                    request.getSessionId(), userId, request.getTeamId());
+            if (exist == null
+                || !request.getTeamId().equals(exist.getTeamId())
+                || !userId.equals(exist.getCreatorUserId())
+                || !sessionType.equals(resolveSessionType(exist.getSessionType()))
+                || !documentIdMatches(documentId, exist.getDocumentId())) {
+                log.warn("Ignore invalid mentor sessionId={}, userId={}, teamId={}, sessionType={}, documentId={}",
+                    request.getSessionId(), userId, request.getTeamId(), sessionType, documentId);
                 request.setSessionId(null);
                 return getOrCreateSession(userId, request);
             }
-            log.info("Mentor reuse session userId={}, teamId={}, sessionId={}",
-                userId, request.getTeamId(), request.getSessionId());
+            log.info("Mentor reuse session userId={}, teamId={}, sessionId={}, sessionType={}, documentId={}",
+                userId, request.getTeamId(), request.getSessionId(), sessionType, documentId);
             return exist;
         }
-        return createSessionRecord(userId, request.getTeamId(), DEFAULT_SESSION_TITLE);
+        String title = SESSION_TYPE_COLLAB_DOC.equals(sessionType) ? DEFAULT_COLLAB_SESSION_TITLE : DEFAULT_SESSION_TITLE;
+        return createSessionRecord(userId, request.getTeamId(), title, sessionType, documentId);
     }
 
-    private AiChatSession createSessionRecord(Long userId, Long teamId, String title) {
+    private AiChatSession createSessionRecord(Long userId, Long teamId, String title, String sessionType, Long documentId) {
         AiChatSession session = new AiChatSession()
             .setTeamId(teamId)
             .setCreatorUserId(userId)
             .setTitle(title)
+            .setSessionType(sessionType)
+            .setDocumentId(documentId)
             .setStatus(1)
             .setLastMessageAt(LocalDateTime.now())
             .setMessageCount(0)
             .setDeleted(0);
         boolean saved = aiChatSessionService.save(session);
-        log.info("Mentor create session result saved={}, userId={}, teamId={}, sessionId={}",
-            saved, userId, teamId, session.getId());
+        log.info("Mentor create session result saved={}, userId={}, teamId={}, sessionId={}, sessionType={}, documentId={}",
+            saved, userId, teamId, session.getId(), sessionType, documentId);
         return session;
+    }
+
+    private String resolveSessionType(String sessionType) {
+        if (sessionType == null || sessionType.isBlank()) {
+            return SESSION_TYPE_TEAM_MENTOR;
+        }
+        String normalized = sessionType.trim().toUpperCase();
+        if (SESSION_TYPE_COLLAB_DOC.equals(normalized)) {
+            return SESSION_TYPE_COLLAB_DOC;
+        }
+        return SESSION_TYPE_TEAM_MENTOR;
+    }
+
+    private Long normalizeDocumentId(Long documentId) {
+        return documentId == null || documentId <= 0 ? null : documentId;
+    }
+
+    private void validateSessionScope(String sessionType, Long documentId) {
+        if (SESSION_TYPE_COLLAB_DOC.equals(sessionType) && documentId == null) {
+            throw new BizException(400, "协作文档助手会话缺少documentId");
+        }
+    }
+
+    private boolean documentIdMatches(Long requestDocumentId, Long sessionDocumentId) {
+        Long normalizedSessionDocumentId = normalizeDocumentId(sessionDocumentId);
+        if (requestDocumentId == null) {
+            return normalizedSessionDocumentId == null;
+        }
+        return requestDocumentId.equals(normalizedSessionDocumentId);
+    }
+
+    private boolean isFirstRoundSession(AiChatSession session) {
+        return session != null && (session.getMessageCount() == null || session.getMessageCount() == 0);
+    }
+
+    private void completeStreamAfterOptionalTitle(
+        SseEmitter emitter,
+        AiChatSession session,
+        String userQuestion,
+        String assistantAnswer,
+        String traceId,
+        boolean shouldGenerateTitle
+    ) {
+        if (!shouldGenerateTitle) {
+            sendDoneAndComplete(emitter);
+            return;
+        }
+
+        CompletableFuture
+            .supplyAsync(() -> generateSessionTitle(userQuestion, assistantAnswer), mvcAsyncTaskExecutor)
+            .orTimeout(TITLE_GENERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .whenComplete((title, ex) -> {
+                try {
+                    if (ex != null) {
+                        log.warn("Generate mentor session title failed, sessionId={}, traceId={}",
+                            session.getId(), traceId, ex);
+                        return;
+                    }
+                    if (title == null || title.isBlank()) {
+                        return;
+                    }
+                    updateSessionTitle(session, title);
+                    sendTitleEvent(emitter, session.getId(), title, traceId);
+                } finally {
+                    sendDoneAndComplete(emitter);
+                }
+            });
+    }
+
+    private String generateSessionTitle(String userQuestion, String assistantAnswer) {
+        String prompt = """
+            你是 TeamUp 的会话标题生成器。请根据第一轮用户问题和 AI 回复，为这段对话生成一个简短中文标题。
+            要求：
+            1. 只输出标题，不要解释，不要加引号。
+            2. 标题不超过18个中文字符。
+            3. 保留具体主题，避免“问题讨论”“智能助手”等泛化标题。
+
+            用户问题：
+            %s
+
+            AI回复：
+            %s
+            """.formatted(
+            userQuestion == null ? "" : userQuestion,
+            assistantAnswer == null ? "" : assistantAnswer
+        );
+        OpenAiChatOptions options = OpenAiChatOptions.builder()
+            .model(summaryModel)
+            .temperature(0.2)
+            .build();
+        String title = chatClientBuilder.build()
+            .prompt()
+            .user(prompt)
+            .options(options)
+            .call()
+            .content();
+        return normalizeGeneratedTitle(title);
+    }
+
+    private String normalizeGeneratedTitle(String title) {
+        if (title == null) {
+            return "";
+        }
+        String normalized = title
+            .replaceAll("[\\r\\n]+", " ")
+            .replaceAll("^[\"'“”‘’《》]+|[\"'“”‘’《》]+$", "")
+            .replaceAll("^标题[:：]\\s*", "")
+            .trim();
+        if (normalized.length() <= SESSION_TITLE_PREFIX_MAX) {
+            return normalized;
+        }
+        return normalized.substring(0, SESSION_TITLE_PREFIX_MAX);
+    }
+
+    private void updateSessionTitle(AiChatSession session, String title) {
+        AiChatSession update = new AiChatSession();
+        update.setId(session.getId());
+        update.setTitle(title);
+        aiChatSessionService.updateById(update);
+        session.setTitle(title);
+    }
+
+    private void sendTitleEvent(SseEmitter emitter, Long sessionId, String title, String traceId) {
+        try {
+            Map<String, Object> payload = new HashMap<>(4);
+            payload.put("sessionId", String.valueOf(sessionId));
+            payload.put("title", title);
+            payload.put("traceId", traceId);
+            emitter.send(SseEmitter.event()
+                .name(EVENT_TITLE)
+                .data(objectMapper.writeValueAsString(payload)));
+        } catch (Exception e) {
+            log.warn("Send mentor session title event failed, sessionId={}, traceId={}", sessionId, traceId, e);
+        }
+    }
+
+    private void sendDoneAndComplete(SseEmitter emitter) {
+        try {
+            emitter.send(SseEmitter.event().name(EVENT_DONE).data("[DONE]"));
+        } catch (IOException ignored) {
+            // Client may close the connection after receiving the last chunk.
+        }
+        emitter.complete();
     }
 
     private void updateSessionTitleByFirstQuestion(AiChatSession session, String firstQuestion) {

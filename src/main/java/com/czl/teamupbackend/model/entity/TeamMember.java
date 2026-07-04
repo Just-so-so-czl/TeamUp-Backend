@@ -1,6 +1,7 @@
 package com.czl.teamupbackend.model.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -34,6 +35,10 @@ public class TeamMember implements Serializable {
 
     @Schema(description = "成员身份：1-captain(组长), 2-leader(模块负责人), 3-member(普通组员)")
     private Integer role;
+
+    @Schema(description = "组员身份描述")
+    @TableField("role_description")
+    private String roleDescription;
 
     @Schema(description = "加入小组时间")
     private LocalDateTime joinTime;

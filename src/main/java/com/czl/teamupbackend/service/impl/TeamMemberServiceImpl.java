@@ -166,13 +166,15 @@ public class TeamMemberServiceImpl extends ServiceImpl<TeamMemberMapper, TeamMem
             User user = finalUserMap.get(member.getUserId());
             TeamMemberRoleEnum roleEnum = TeamMemberRoleEnum.fromCode(member.getRole());
             LocalDateTime joinTime = joinTimeMap.getOrDefault(member.getUserId(), member.getJoinTime());
+            String roleDescription = resolveRoleDescription(member, roleEnum);
             return TeamMemberManageItemVO.builder()
                 .userId(member.getUserId())
                 .username(user == null ? "未知用户" : user.getUsername())
                 .avatar(user == null ? 1 : user.getAvatar())
                 .roleCode(member.getRole())
                 .roleName(roleEnum.getRoleName())
-                .roleDesc(roleEnum.getRoleDesc())
+                .roleDesc(roleDescription)
+                .roleDescription(roleDescription)
                 .joinTime(joinTime)
                 .build();
         }).collect(Collectors.toList());
@@ -182,6 +184,7 @@ public class TeamMemberServiceImpl extends ServiceImpl<TeamMemberMapper, TeamMem
             .findFirst()
             .orElse(null);
         TeamMemberRoleEnum selfRole = TeamMemberRoleEnum.fromCode(selfMember == null ? null : selfMember.getRole());
+        String selfRoleDescription = selfMember == null ? selfRole.getRoleDesc() : resolveRoleDescription(selfMember, selfRole);
 
         List<TeamPendingJoinRequestVO> pendingVOList = pendingRequests.stream().map(req -> {
             User user = finalUserMap.get(req.getUserId());
@@ -198,7 +201,7 @@ public class TeamMemberServiceImpl extends ServiceImpl<TeamMemberMapper, TeamMem
         return TeamMembersManageVO.builder()
             .currentUserCaptain(team.getOwnerId().equals(currentUserId))
             .currentUserRoleName(selfRole.getRoleName())
-            .currentUserRoleDesc(selfRole.getRoleDesc())
+            .currentUserRoleDesc(selfRoleDescription)
             .pendingRequests(pendingVOList)
             .members(memberVOList)
             .build();
@@ -272,18 +275,22 @@ public class TeamMemberServiceImpl extends ServiceImpl<TeamMemberMapper, TeamMem
             throw new BizException(404, "成员不存在");
         }
 
-        // 当前版本将描述保存到申请记录的 description 字段，作为用户在组中的个性描述。
-        TeamJoinRequest latestApproved = teamJoinRequestMapper.selectOne(new LambdaQueryWrapper<TeamJoinRequest>()
-            .eq(TeamJoinRequest::getTeamId, teamId)
-            .eq(TeamJoinRequest::getUserId, currentUserId)
-            .eq(TeamJoinRequest::getStatus, STATUS_APPROVED)
-            .orderByDesc(TeamJoinRequest::getUpdateTime)
-            .last("limit 1"));
-        if (latestApproved != null) {
-            latestApproved.setDescription(roleDesc == null ? null : roleDesc.trim());
-            teamJoinRequestMapper.updateById(latestApproved);
-        }
+        selfMember.setRoleDescription(normalizeRoleDescription(roleDesc));
+        this.updateById(selfMember);
         log.info("Self role desc updated, teamId={}, userId={}", team.getId(), currentUserId);
+    }
+
+    private String resolveRoleDescription(TeamMember member, TeamMemberRoleEnum roleEnum) {
+        String roleDescription = member == null ? null : normalizeRoleDescription(member.getRoleDescription());
+        return roleDescription == null ? roleEnum.getRoleDesc() : roleDescription;
+    }
+
+    private String normalizeRoleDescription(String roleDescription) {
+        if (roleDescription == null) {
+            return null;
+        }
+        String trimmed = roleDescription.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 
     private Team validateTeamAndMembership(Long currentUserId, Long teamId) {

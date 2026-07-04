@@ -6,5 +6,8 @@ import lombok.Data;
 public class MentorSessionListRequest {
 
     private Long teamId;
-}
 
+    private String sessionType;
+
+    private Long documentId;
+}

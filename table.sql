@@ -239,6 +239,8 @@ CREATE TABLE IF NOT EXISTS ai_chat_session (
                                                team_id           BIGINT       NOT NULL COMMENT '小组ID',
                                                creator_user_id   BIGINT       NOT NULL COMMENT '创建人用户ID',
                                                title             VARCHAR(128) NOT NULL DEFAULT '' COMMENT '会话标题',
+    session_type     VARCHAR(32)  NOT NULL DEFAULT 'TEAM_MENTOR' COMMENT '会话类型:TEAM_MENTOR=小组导师,COLLAB_DOC=协作文档助手',
+    document_id      BIGINT       NULL COMMENT '关联协作文档ID',
     status            TINYINT      NOT NULL DEFAULT 1 COMMENT '状态:1=进行中,2=已关闭',
     last_message_at   DATETIME     NULL COMMENT '最后一条消息时间',
     message_count     INT          NOT NULL DEFAULT 0 COMMENT '消息数量',
@@ -247,6 +249,7 @@ CREATE TABLE IF NOT EXISTS ai_chat_session (
     updated_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (id),
     KEY idx_team_last_message (team_id, last_message_at),
+    KEY idx_team_type_doc_last_message (team_id, session_type, document_id, last_message_at),
     KEY idx_creator_created_at (creator_user_id, created_at),
     KEY idx_status_deleted (status, deleted)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI导师对话会话表';
@@ -314,3 +317,11 @@ CREATE TABLE IF NOT EXISTS ai_chat_memory_state (
 ALTER TABLE ai_chat_memory_state
     ADD COLUMN last_mid_term_compress_at DATETIME NULL COMMENT '最近一次中期压缩时间'
         AFTER mid_term_token_count;
+
+-- 协作文档页 AI 会话类型隔离字段：已存在 ai_chat_session 表时执行
+ALTER TABLE ai_chat_session
+    ADD COLUMN session_type VARCHAR(32) NOT NULL DEFAULT 'TEAM_MENTOR' COMMENT '会话类型:TEAM_MENTOR=小组导师,COLLAB_DOC=协作文档助手'
+        AFTER title,
+    ADD COLUMN document_id BIGINT NULL COMMENT '关联协作文档ID'
+        AFTER session_type,
+    ADD KEY idx_team_type_doc_last_message (team_id, session_type, document_id, last_message_at);

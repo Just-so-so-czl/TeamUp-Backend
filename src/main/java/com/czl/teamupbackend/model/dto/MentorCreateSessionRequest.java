@@ -8,5 +8,8 @@ public class MentorCreateSessionRequest {
     private Long teamId;
 
     private String title;
-}
 
+    private String sessionType;
+
+    private Long documentId;
+}

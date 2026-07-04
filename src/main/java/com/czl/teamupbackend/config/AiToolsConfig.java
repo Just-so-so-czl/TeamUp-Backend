@@ -124,10 +124,8 @@ public class AiToolsConfig {
                 throw new BizException(401, "当前用户未登录，无法调用工具查询任务清单");
             }
 
-            Long teamId = request == null ? null : request.getTeamId();
-            if (teamId == null) {
-                teamId = getLongValue(toolContext, TOOL_CTX_TEAM_ID);
-            }
+            Long requestTeamId = request == null ? null : request.getTeamId();
+            Long teamId = resolveTeamIdFromContextFirst(toolContext, requestTeamId, "AI tool");
             if (teamId == null) {
                 throw new BizException(400, "查询任务清单失败：小组ID不能为空");
             }
@@ -197,10 +195,8 @@ public class AiToolsConfig {
         if (userId == null) {
             throw new BizException(401, "当前用户未登录，无法调用工具");
         }
-        Long teamId = request == null ? null : request.getTeamId();
-        if (teamId == null) {
-            teamId = getLongValue(toolContext, TOOL_CTX_TEAM_ID);
-        }
+        Long requestTeamId = request == null ? null : request.getTeamId();
+            Long teamId = resolveTeamIdFromContextFirst(toolContext, requestTeamId, "AI tool");
         if (teamId == null) {
             throw new BizException(400, errorPrefix + "：小组ID不能为空");
         }
@@ -212,10 +208,8 @@ public class AiToolsConfig {
         if (userId == null) {
             throw new BizException(401, "当前用户未登录，无法调用工具");
         }
-        Long teamId = request == null ? null : request.getTeamId();
-        if (teamId == null) {
-            teamId = getLongValue(toolContext, TOOL_CTX_TEAM_ID);
-        }
+        Long requestTeamId = request == null ? null : request.getTeamId();
+            Long teamId = resolveTeamIdFromContextFirst(toolContext, requestTeamId, "AI tool");
         if (teamId == null) {
             throw new BizException(400, errorPrefix + "：小组ID不能为空");
         }
@@ -288,6 +282,18 @@ public class AiToolsConfig {
             result.add(item);
         }
         return result;
+    }
+
+    private Long resolveTeamIdFromContextFirst(ToolContext toolContext, Long requestTeamId, String toolName) {
+        Long contextTeamId = getLongValue(toolContext, TOOL_CTX_TEAM_ID);
+        if (contextTeamId != null) {
+            if (requestTeamId != null && !requestTeamId.equals(contextTeamId)) {
+                log.warn("AI tool request teamId ignored, toolName={}, requestTeamId={}, contextTeamId={}",
+                    toolName, requestTeamId, contextTeamId);
+            }
+            return contextTeamId;
+        }
+        return requestTeamId;
     }
 
     private Long getLongValue(ToolContext toolContext, String key) {

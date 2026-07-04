@@ -140,6 +140,7 @@ public class TeamJoinRequestServiceImpl extends ServiceImpl<TeamJoinRequestMappe
                 .setTeamId(joinRequest.getTeamId())
                 .setUserId(joinRequest.getUserId())
                 .setRole(TeamMemberRoleEnum.MEMBER.getCode())
+                .setRoleDescription(joinRequest.getDescription())
                 .setJoinTime(LocalDateTime.now());
             teamMemberMapper.insert(teamMember);
         }
