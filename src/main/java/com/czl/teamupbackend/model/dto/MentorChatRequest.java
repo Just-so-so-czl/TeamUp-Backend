@@ -1,6 +1,7 @@
 package com.czl.teamupbackend.model.dto;
 
 import lombok.Data;
+import java.util.List;
 
 @Data
 public class MentorChatRequest {
@@ -38,4 +39,7 @@ public class MentorChatRequest {
      * 选中文本的结束行号，从 1 开始。
      */
     private Integer selectedEndLine;
+
+    /** Documents explicitly selected through the mentor input @ mention picker. */
+    private List<Long> mentionedDocumentIds;
 }

@@ -325,3 +325,51 @@ ALTER TABLE ai_chat_session
     ADD COLUMN document_id BIGINT NULL COMMENT '关联协作文档ID'
         AFTER session_type,
     ADD KEY idx_team_type_doc_last_message (team_id, session_type, document_id, last_message_at);
+
+-- Adaptive Plan + ReAct runtime audit. Execute once after the existing AI chat tables.
+CREATE TABLE IF NOT EXISTS ai_agent_run (
+    id BIGINT NOT NULL COMMENT 'Snowflake agent run ID',
+    session_id BIGINT NOT NULL COMMENT 'AI chat session ID',
+    team_id BIGINT NOT NULL COMMENT 'Team ID',
+    user_id BIGINT NOT NULL COMMENT 'Operator user ID',
+    trace_id VARCHAR(64) NOT NULL COMMENT 'Request trace ID',
+    scene_type VARCHAR(32) NOT NULL COMMENT 'TEAM_MENTOR/COLLAB_DOC',
+    goal VARCHAR(500) NOT NULL COMMENT 'User goal snapshot',
+    plan_json JSON NULL COMMENT 'Structured adaptive plan snapshot',
+    plan_version INT NOT NULL DEFAULT 1 COMMENT 'Plan revision version',
+    status VARCHAR(32) NOT NULL COMMENT 'RUNNING/WAITING_CONFIRMATION/COMPLETED/FAILED/CANCELLED',
+    step_count INT NOT NULL DEFAULT 0 COMMENT 'Persisted execution step count',
+    prompt_tokens INT NOT NULL DEFAULT 0 COMMENT 'Prompt token consumption',
+    completion_tokens INT NOT NULL DEFAULT 0 COMMENT 'Completion token consumption',
+    error_msg VARCHAR(500) NOT NULL DEFAULT '' COMMENT 'Terminal failure reason',
+    started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Started time',
+    finished_at DATETIME NULL COMMENT 'Finished time',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Created time',
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Updated time',
+    PRIMARY KEY (id),
+    KEY idx_session_created_at (session_id, created_at),
+    KEY idx_team_status_created_at (team_id, status, created_at),
+    KEY idx_trace_id (trace_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI adaptive Plan and ReAct run audit';
+
+CREATE TABLE IF NOT EXISTS ai_agent_step (
+    id BIGINT NOT NULL COMMENT 'Snowflake agent step ID',
+    run_id BIGINT NOT NULL COMMENT 'Agent run ID',
+    step_no INT NOT NULL COMMENT 'Execution order starting at 1',
+    step_type VARCHAR(32) NOT NULL COMMENT 'ANSWER/READ/ANALYZE/DRAFT/WRITE/VERIFY/FINISH',
+    tool_name VARCHAR(100) NULL COMMENT 'Invoked tool name when applicable',
+    status VARCHAR(32) NOT NULL COMMENT 'RUNNING/DONE/FAILED/WAITING_CONFIRMATION',
+    decision_summary VARCHAR(500) NOT NULL DEFAULT '' COMMENT 'Safe concise execution summary',
+    observation_summary VARCHAR(1000) NOT NULL DEFAULT '' COMMENT 'Sanitized tool result summary',
+    duration_ms INT NOT NULL DEFAULT 0 COMMENT 'Step duration',
+    prompt_tokens INT NOT NULL DEFAULT 0 COMMENT 'Step prompt tokens',
+    completion_tokens INT NOT NULL DEFAULT 0 COMMENT 'Step completion tokens',
+    started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Started time',
+    finished_at DATETIME NULL COMMENT 'Finished time',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Created time',
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Updated time',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_run_step_no (run_id, step_no),
+    KEY idx_run_created_at (run_id, created_at),
+    KEY idx_status_created_at (status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI adaptive Plan and ReAct step audit';

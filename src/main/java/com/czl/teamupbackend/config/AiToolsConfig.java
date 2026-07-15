@@ -1,10 +1,14 @@
 package com.czl.teamupbackend.config;
 
 import com.czl.teamupbackend.commen.exception.BizException;
+import com.czl.teamupbackend.service.AgentRunService;
+import com.czl.teamupbackend.mapper.DocumentMapper;
+import com.czl.teamupbackend.model.dto.AiDocumentFullTextToolRequest;
 import com.czl.teamupbackend.model.dto.AiTeamDocumentsToolRequest;
 import com.czl.teamupbackend.model.dto.TeamIdToolRequest;
 import com.czl.teamupbackend.model.dto.TeamDetailRequest;
 import com.czl.teamupbackend.model.mongo.DocumentContentDoc;
+import com.czl.teamupbackend.model.entity.Document;
 import com.czl.teamupbackend.model.vo.DocumentItemVO;
 import com.czl.teamupbackend.model.vo.DocumentListVO;
 import com.czl.teamupbackend.model.vo.TeamDetailVO;
@@ -17,6 +21,7 @@ import com.czl.teamupbackend.service.IDocumentService;
 import com.czl.teamupbackend.service.ITaskListService;
 import com.czl.teamupbackend.service.ITeamMemberService;
 import com.czl.teamupbackend.service.ITeamService;
+import com.czl.teamupbackend.service.TeamWorkProfileService;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -39,8 +44,16 @@ public class AiToolsConfig {
 
     private static final String TOOL_CTX_USER_ID = "userId";
     private static final String TOOL_CTX_TEAM_ID = "teamId";
+    private static final String TOOL_CTX_AGENT_RUN_ID = "agentRunId";
     private static final int DOCUMENT_TYPE_RESOURCE = 1;
     private static final int DOCUMENT_TYPE_COLLAB = 2;
+
+    private void recordReadTool(AgentRunService agentRunService, ToolContext toolContext, String toolName, String summary) {
+        Long runId = getLongValue(toolContext, TOOL_CTX_AGENT_RUN_ID);
+        if (runId != null) {
+            agentRunService.recordReadTool(runId, toolName, summary);
+        }
+    }
 
     @Bean
     @Description("获取当前小组的整体概览信息，包括小组基础信息、成员数量、任务数量、未完成任务数量、文档数量和当前用户在小组中的角色")
@@ -48,9 +61,11 @@ public class AiToolsConfig {
         ITeamService teamService,
         ITeamMemberService teamMemberService,
         ITaskListService taskListService,
-        IDocumentService documentService
+        IDocumentService documentService,
+        AgentRunService agentRunService
     ) {
         return (request, toolContext) -> {
+            recordReadTool(agentRunService, toolContext, "queryTeamOverview", "正在查询小组概览");
             ToolIdentity identity = resolveIdentity(request, toolContext, "查询小组概览失败");
             try {
                 teamService.validateTeamAccessible(identity.userId(), identity.teamId());
@@ -94,9 +109,11 @@ public class AiToolsConfig {
     @Description("获取当前小组成员信息，包括成员姓名、角色、职责描述、加入时间，以及当前用户在小组中的角色")
     public BiFunction<TeamIdToolRequest, ToolContext, Map<String, Object>> queryTeamMembers(
         ITeamMemberService teamMemberService,
-        ITeamService teamService
+        ITeamService teamService,
+        AgentRunService agentRunService
     ) {
         return (request, toolContext) -> {
+            recordReadTool(agentRunService, toolContext, "queryTeamMembers", "正在查询成员与角色信息");
             ToolIdentity identity = resolveIdentity(request, toolContext, "查询小组成员失败");
             try {
                 teamService.validateTeamAccessible(identity.userId(), identity.teamId());
@@ -122,9 +139,11 @@ public class AiToolsConfig {
     @Description("获取/查询当前小组下的所有任务清单以及清单里的所有具体子任务项，包含清单截止时间、描述、进度百分比、各个子任务的负责人、状态和子任务截止时间等详细信息")
     public BiFunction<TeamIdToolRequest, ToolContext, TeamTaskListVO> queryTeamTaskLists(
         ITaskListService taskListService,
-        ITeamService teamService
+        ITeamService teamService,
+        AgentRunService agentRunService
     ) {
         return (request, toolContext) -> {
+            recordReadTool(agentRunService, toolContext, "queryTeamTaskLists", "正在查询任务清单与进度");
             Long userId = getLongValue(toolContext, TOOL_CTX_USER_ID);
             if (userId == null) {
                 throw new BizException(401, "当前用户未登录，无法调用工具查询任务清单");
@@ -165,9 +184,11 @@ public class AiToolsConfig {
     public BiFunction<AiTeamDocumentsToolRequest, ToolContext, Map<String, Object>> queryTeamDocuments(
         IDocumentService documentService,
         ITeamService teamService,
-        MongoTemplate mongoTemplate
+        MongoTemplate mongoTemplate,
+        AgentRunService agentRunService
     ) {
         return (request, toolContext) -> {
+            recordReadTool(agentRunService, toolContext, "queryTeamDocuments", "正在查询相关文档与摘要");
             ToolIdentity identity = resolveIdentity(request, toolContext, "查询小组文档失败");
             try {
                 teamService.validateTeamAccessible(identity.userId(), identity.teamId());
@@ -197,6 +218,98 @@ public class AiToolsConfig {
             DocumentListVO documents = documentService.listTeamDocuments(identity.userId(), identity.teamId(), type);
             result.put("documents", sanitizeDocuments(documents.getDocuments(), loadAiSummaryMap(documents.getDocuments(), mongoTemplate)));
             result.put("currentUserCanUpload", documents.getCurrentUserCanUpload());
+            return result;
+        };
+    }
+
+    @Bean
+    @Description("根据 queryTeamDocuments 返回的 documentId 获取一份文档的完整正文。仅在用户问题确实需要阅读原文时调用，禁止猜测 documentId。支持资料文档和协作文档；服务端会校验当前小组访问权限。")
+    public BiFunction<AiDocumentFullTextToolRequest, ToolContext, Map<String, Object>> queryDocumentFullText(
+        DocumentMapper documentMapper,
+        ITeamService teamService,
+        MongoTemplate mongoTemplate,
+        AgentRunService agentRunService
+    ) {
+        return (request, toolContext) -> {
+            recordReadTool(agentRunService, toolContext, "queryDocumentFullText", "正在读取引用文档全文");
+            Long userId = getLongValue(toolContext, TOOL_CTX_USER_ID);
+            Long teamId = getLongValue(toolContext, TOOL_CTX_TEAM_ID);
+            if (userId == null) {
+                throw new BizException(401, "当前用户未登录，无法读取文档全文");
+            }
+            if (teamId == null) {
+                throw new BizException(400, "读取文档全文失败：小组ID不能为空");
+            }
+            if (request == null || request.getDocumentId() == null || request.getDocumentId() <= 0) {
+                throw new BizException(400, "读取文档全文失败：documentId不能为空");
+            }
+            teamService.validateTeamAccessible(userId, teamId);
+
+            Document document = documentMapper.selectById(request.getDocumentId());
+            if (document == null || !teamId.equals(document.getTeamId())) {
+                throw new BizException(404, "文档不存在或不属于当前小组");
+            }
+
+            Map<String, Object> result = new HashMap<>();
+            result.put("documentId", document.getId());
+            result.put("title", document.getTitle());
+            result.put("type", document.getType());
+            result.put("typeName", Integer.valueOf(DOCUMENT_TYPE_RESOURCE).equals(document.getType()) ? "资料文档" : "协作文档");
+            result.put("fileType", document.getFileType());
+
+            String fullText;
+            if (Integer.valueOf(DOCUMENT_TYPE_RESOURCE).equals(document.getType())) {
+                DocumentContentDoc content = mongoTemplate.findOne(
+                    Query.query(Criteria.where("documentId").is(document.getId())),
+                    DocumentContentDoc.class
+                );
+                fullText = content == null ? "" : normalizeToolText(content.getExtractedText());
+                result.put("contentStatus", content == null ? "PENDING" : content.getParseStatus());
+                result.put("contentError", content == null ? "文档正文尚未提取" : content.getParseError());
+            } else if (Integer.valueOf(DOCUMENT_TYPE_COLLAB).equals(document.getType())) {
+                org.bson.Document content = mongoTemplate.findOne(
+                    Query.query(Criteria.where("docId").is(String.valueOf(document.getId()))),
+                    org.bson.Document.class,
+                    "collaboration_documents"
+                );
+                fullText = content == null ? "" : normalizeToolText(content.getString("plain_text"));
+                result.put("contentStatus", fullText.isBlank() ? "PENDING" : "SUCCESS");
+                result.put("contentError", fullText.isBlank() ? "协作文档尚未保存正文" : null);
+            } else {
+                throw new BizException(400, "不支持的文档类型");
+            }
+            result.put("textLength", fullText.length());
+            result.put("fullText", fullText);
+            return result;
+        };
+    }
+
+    @Bean
+    @Description("获取当前小组在协作过程中沉淀的工作画像，包括成员工作偏好、协作约定、长期规范、重复风险、复盘洞察和待协商议题；不返回小组资料、任务、进度或截止时间")
+    public BiFunction<TeamIdToolRequest, ToolContext, Map<String, Object>> queryTeamWorkProfile(
+        ITeamService teamService,
+        TeamWorkProfileService teamWorkProfileService,
+        AgentRunService agentRunService
+    ) {
+        return (request, toolContext) -> {
+            recordReadTool(agentRunService, toolContext, "queryTeamWorkProfile", "正在查询团队协作画像");
+            ToolIdentity identity = resolveIdentity(request, toolContext, "查询团队工作画像失败");
+            try {
+                teamService.validateTeamAccessible(identity.userId(), identity.teamId());
+            } catch (BizException e) {
+                if (isInvalidTeamContext(e)) {
+                    log.warn("AI tool queryTeamWorkProfile skipped due to invalid team context, userId={}, teamId={}, message={}",
+                        identity.userId(), identity.teamId(), e.getMessage());
+                    Map<String, Object> result = new HashMap<>();
+                    result.put("teamContextValid", false);
+                    result.put("message", "当前小组上下文已失效：" + e.getMessage());
+                    result.put("teamId", identity.teamId());
+                    return result;
+                }
+                throw e;
+            }
+            Map<String, Object> result = teamWorkProfileService.getAgentView(identity.teamId());
+            result.put("teamContextValid", true);
             return result;
         };
     }
@@ -358,6 +471,10 @@ public class AiToolsConfig {
             return contextTeamId;
         }
         return requestTeamId;
+    }
+
+    private String normalizeToolText(String text) {
+        return text == null ? "" : text.trim();
     }
 
     private Long getLongValue(ToolContext toolContext, String key) {

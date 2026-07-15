@@ -2,6 +2,7 @@ package com.czl.teamupbackend.event;
 
 import com.czl.teamupbackend.mq.DocumentTextExtractConsumer;
 import com.czl.teamupbackend.service.CollaborationDocumentSummaryService;
+import com.czl.teamupbackend.service.TeamWorkProfileService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
@@ -16,6 +17,7 @@ public class CollaborationDocumentSummaryTaskConsumer {
 
     private final DocumentTextExtractConsumer documentTextExtractConsumer;
     private final CollaborationDocumentSummaryService collaborationDocumentSummaryService;
+    private final TeamWorkProfileService teamWorkProfileService;
 
     @Async
     @EventListener
@@ -25,7 +27,17 @@ public class CollaborationDocumentSummaryTaskConsumer {
             if (!StringUtils.hasText(summary)) {
                 throw new IllegalStateException("摘要模型返回为空");
             }
-            collaborationDocumentSummaryService.completeSummary(event, summary);
+            boolean stored = collaborationDocumentSummaryService.completeSummary(event, summary);
+            if (stored) {
+                teamWorkProfileService.requestExtraction(
+                    event.teamId(),
+                    "COLLABORATION_DOCUMENT",
+                    String.valueOf(event.documentId()),
+                    event.title(),
+                    null,
+                    event.sourceText()
+                );
+            }
         } catch (Exception e) {
             collaborationDocumentSummaryService.failSummary(event, e);
             log.error("Collaboration summary generation failed, documentId={}, triggerType={}",

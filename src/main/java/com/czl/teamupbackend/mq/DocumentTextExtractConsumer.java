@@ -7,6 +7,7 @@ import com.czl.teamupbackend.model.mongo.DocumentContentDoc;
 import com.czl.teamupbackend.model.mq.DocumentTextExtractMessage;
 import com.czl.teamupbackend.repository.DocumentContentRepository;
 import com.czl.teamupbackend.service.IOssService;
+import com.czl.teamupbackend.service.TeamWorkProfileService;
 import java.io.InputStream;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -65,6 +66,7 @@ public class DocumentTextExtractConsumer {
     private final DocumentMapper documentMapper;
     private final DocumentContentRepository documentContentRepository;
     private final IOssService ossService;
+    private final TeamWorkProfileService teamWorkProfileService;
     private final ChatClient.Builder chatClientBuilder;
     private final Tika tika = new Tika();
 
@@ -92,6 +94,7 @@ public class DocumentTextExtractConsumer {
         DocumentContentDoc contentDoc = getOrCreateContentDoc(document);
         if (STATUS_SUCCESS.equals(contentDoc.getParseStatus())) {
             generateSummaryIfNeeded(document, contentDoc);
+            requestWorkProfileExtraction(document, contentDoc);
             return;
         }
 
@@ -102,6 +105,7 @@ public class DocumentTextExtractConsumer {
             String extractedText = tika.parseToString(inputStream, metadata, MAX_EXTRACTED_TEXT_LENGTH);
             saveSuccess(contentDoc, extractedText == null ? "" : extractedText);
             generateSummaryIfNeeded(document, contentDoc);
+            requestWorkProfileExtraction(document, contentDoc);
             log.info("Document text extracted successfully, documentId={}, textLength={}",
                 document.getId(), contentDoc.getExtractedTextLength());
         } catch (Exception e) {
@@ -183,6 +187,20 @@ public class DocumentTextExtractConsumer {
             documentContentRepository.save(contentDoc);
             log.error("Document AI summary generation failed, documentId={}", document.getId(), e);
         }
+    }
+
+    private void requestWorkProfileExtraction(Document document, DocumentContentDoc contentDoc) {
+        if (document == null || contentDoc == null || !hasText(contentDoc.getExtractedText())) {
+            return;
+        }
+        teamWorkProfileService.requestExtraction(
+            document.getTeamId(),
+            "RESOURCE_DOCUMENT",
+            String.valueOf(document.getId()),
+            document.getTitle(),
+            null,
+            contentDoc.getExtractedText()
+        );
     }
 
     /**

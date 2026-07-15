@@ -133,7 +133,7 @@ public class CollaborationDocumentSummaryService {
         return buildStatus(documentId, loadSnapshot(documentId), null);
     }
 
-    public void completeSummary(CollaborationDocumentSummaryRequestedEvent event, String summary) {
+    public boolean completeSummary(CollaborationDocumentSummaryRequestedEvent event, String summary) {
         Query query = sourceUnchangedQuery(event);
         Update update = new Update()
             .set("ai_summary", summary)
@@ -146,10 +146,11 @@ public class CollaborationDocumentSummaryService {
         if (modifiedCount == 0) {
             resetToPendingAndDebounce(event.documentId());
             log.info("Collaboration summary result discarded because content changed, documentId={}", event.documentId());
-            return;
+            return false;
         }
         log.info("Collaboration summary generated, documentId={}, triggerType={}, summaryLength={}",
             event.documentId(), event.triggerType(), summary.length());
+        return true;
     }
 
     public void failSummary(CollaborationDocumentSummaryRequestedEvent event, Exception exception) {
@@ -194,6 +195,7 @@ public class CollaborationDocumentSummaryService {
     private void publishSummaryRequest(Document document, Snapshot snapshot, String triggerType) {
         applicationEventPublisher.publishEvent(new CollaborationDocumentSummaryRequestedEvent(
             document.getId(),
+            document.getTeamId(),
             document.getTitle(),
             snapshot.plainText(),
             snapshot.contentHash(),

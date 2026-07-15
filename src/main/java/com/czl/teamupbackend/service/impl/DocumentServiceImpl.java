@@ -18,12 +18,14 @@ import com.czl.teamupbackend.model.vo.DocumentItemVO;
 import com.czl.teamupbackend.model.vo.DocumentListVO;
 import com.czl.teamupbackend.model.vo.MentorSidebarDocItemVO; 
 import com.czl.teamupbackend.model.vo.MentorSidebarDocListVO;
+import com.czl.teamupbackend.model.vo.MentorDocumentMentionVO;
 import com.czl.teamupbackend.service.IDocumentService;
 import com.czl.teamupbackend.service.IOssService;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Collections;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -46,6 +48,7 @@ public class  DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> 
     private static final int TYPE_COLLAB = 2;
     private static final String COLLAB_PLACEHOLDER_FILE_TYPE = "collab";
     private static final String COLLABORATION_DOCUMENT_COLLECTION = "collaboration_documents";
+    private static final int MENTION_SEARCH_LIMIT = 8;
     private static final Set<String> ALLOWED_FILE_TYPES = Set.of("pdf", "docx", "md", "txt");
     private static final DateTimeFormatter MENTOR_DATE_FMT = DateTimeFormatter.ofPattern("MM/dd");
 
@@ -259,6 +262,90 @@ public class  DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> 
             .build()).toList();
 
         return MentorSidebarDocListVO.builder().documents(items).build();
+    }
+
+    @Override
+    public List<MentorDocumentMentionVO> searchMentorMentionDocuments(Long currentUserId, Long teamId, String keyword) {
+        validateMembership(currentUserId, teamId);
+        String normalizedKeyword = keyword == null ? "" : keyword.trim();
+        LambdaQueryWrapper<Document> query = new LambdaQueryWrapper<Document>()
+            .eq(Document::getTeamId, teamId)
+            .in(Document::getType, TYPE_RESOURCE, TYPE_COLLAB)
+            .orderByDesc(Document::getUpdateTime)
+            .last("LIMIT " + MENTION_SEARCH_LIMIT);
+        if (!normalizedKeyword.isBlank()) {
+            query.like(Document::getTitle, normalizedKeyword);
+        }
+        return this.list(query).stream().map(document -> MentorDocumentMentionVO.builder()
+            .documentId(String.valueOf(document.getId()))
+            .title(document.getTitle())
+            .type(document.getType())
+            .typeName(document.getType() != null && document.getType() == TYPE_RESOURCE ? "资料文档" : "协作文档")
+            .fileType(document.getFileType())
+            .build()).toList();
+    }
+
+    @Override
+    public String buildMentorMentionReference(Long currentUserId, Long teamId, List<Long> documentIds) {
+        List<Document> documents = resolveMentionDocuments(currentUserId, teamId, documentIds);
+        if (documents.isEmpty()) {
+            return "";
+        }
+        return documents.stream()
+            .map(document -> "[" + (document.getType() != null && document.getType() == TYPE_RESOURCE ? "资料" : "协作")
+                + "文档：" + document.getTitle() + "]")
+            .collect(Collectors.joining("、"));
+    }
+
+    @Override
+    public String buildMentorMentionContext(Long currentUserId, Long teamId, List<Long> documentIds) {
+        List<Document> documents = resolveMentionDocuments(currentUserId, teamId, documentIds);
+        if (documents.isEmpty()) {
+            return "";
+        }
+        StringBuilder context = new StringBuilder("\n\n以下是用户在本轮明确引用的文档全文。仅将其用于回答当前问题，不要复述全文或泄露无关内容：\n");
+        for (Document document : documents) {
+            String text = loadFullMentionText(document);
+            if (text.isBlank()) {
+                throw new BizException(409, "引用文档《" + document.getTitle() + "》的正文暂不可用，请稍后重试");
+            }
+            context.append("\n--- 文档：").append(document.getTitle())
+                .append("（").append(document.getType() != null && document.getType() == TYPE_RESOURCE ? "资料文档" : "协作文档")
+                .append("）---\n").append(text).append("\n--- 文档结束 ---\n");
+        }
+        return context.toString();
+    }
+
+    private List<Document> resolveMentionDocuments(Long currentUserId, Long teamId, List<Long> documentIds) {
+        validateMembership(currentUserId, teamId);
+        if (documentIds == null || documentIds.isEmpty()) {
+            return List.of();
+        }
+        List<Long> normalizedIds = documentIds.stream().filter(id -> id != null && id > 0).distinct().toList();
+        if (normalizedIds.isEmpty()) {
+            return List.of();
+        }
+        List<Document> documents = this.list(new LambdaQueryWrapper<Document>()
+            .eq(Document::getTeamId, teamId)
+            .in(Document::getId, normalizedIds)
+            .in(Document::getType, TYPE_RESOURCE, TYPE_COLLAB));
+        if (documents.size() != normalizedIds.size()) {
+            throw new BizException(403, "存在不可引用的文档");
+        }
+        Map<Long, Document> documentMap = documents.stream().collect(Collectors.toMap(Document::getId, document -> document));
+        return normalizedIds.stream().map(documentMap::get).toList();
+    }
+
+    private String loadFullMentionText(Document document) {
+        if (document.getType() != null && document.getType() == TYPE_RESOURCE) {
+            DocumentContentDoc content = mongoTemplate.findOne(
+                Query.query(Criteria.where("documentId").is(document.getId())), DocumentContentDoc.class);
+            return content == null || content.getExtractedText() == null ? "" : content.getExtractedText().trim();
+        }
+        org.bson.Document content = mongoTemplate.findOne(
+            Query.query(Criteria.where("docId").is(String.valueOf(document.getId()))),
+            org.bson.Document.class, COLLABORATION_DOCUMENT_COLLECTION);
+        return content == null || content.getString("plain_text") == null ? "" : content.getString("plain_text").trim();
     }
 
     private Document getDocumentById(Long documentId) {

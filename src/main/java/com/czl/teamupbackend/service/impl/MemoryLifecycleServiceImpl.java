@@ -14,6 +14,7 @@ import com.czl.teamupbackend.service.IAiChatMemoryStateService;
 import com.czl.teamupbackend.service.IAiChatMessageIndexService;
 import com.czl.teamupbackend.service.IAiChatSessionService;
 import com.czl.teamupbackend.service.MemoryLifecycleService;
+import com.czl.teamupbackend.service.TeamWorkProfileService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
@@ -87,6 +88,7 @@ public class MemoryLifecycleServiceImpl implements MemoryLifecycleService {
     private final TokenCountEstimator tokenCountEstimator;
     private final ChatClient.Builder chatClientBuilder;
     private final ApplicationEventPublisher applicationEventPublisher;
+    private final TeamWorkProfileService teamWorkProfileService;
 
     @Qualifier("memoryLifecycleExecutor")
     private final Executor memoryLifecycleExecutor;
@@ -169,6 +171,14 @@ public class MemoryLifecycleServiceImpl implements MemoryLifecycleService {
                 selection,
                 midDoc
             );
+            teamWorkProfileService.requestExtraction(
+                session.getTeamId(),
+                "CHAT_COMPRESSION_MID",
+                event.getSessionId() + ":MID",
+                session.getTitle(),
+                session.getCreatorUserId(),
+                chatHistory
+            );
 
             log.info(
                 "Mid-term memory compression success, sessionId={}, shortTermTokenBefore={}, shortTermTokenAfter={}, removedMessageCount={}, removedTokenCount={}, summaryTokenCount={}, midTermTokenCount={}, removedMessages={}",
@@ -246,6 +256,14 @@ public class MemoryLifecycleServiceImpl implements MemoryLifecycleService {
             memoryState.setEarlyTermTokenCount(earlyDoc.getTokenCount());
             aiChatMemoryStateService.saveOrUpdate(memoryState);
             markEarlyTermCompressionSuccess(memoryState, midTermTokenBefore, summaryTokenCount, selection, earlyDoc);
+            teamWorkProfileService.requestExtraction(
+                session.getTeamId(),
+                "CHAT_COMPRESSION_EARLY",
+                event.getSessionId() + ":EARLY",
+                session.getTitle(),
+                session.getCreatorUserId(),
+                midTermHistory
+            );
 
             log.info(
                 "Early-term memory compression success, sessionId={}, midTermTokenBefore={}, midTermTokenAfter={}, removedSegmentCount={}, removedTokenCount={}, summaryTokenCount={}, earlyTermTokenCount={}, removedSegments={}",

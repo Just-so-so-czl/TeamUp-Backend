@@ -8,17 +8,24 @@ import com.czl.teamupbackend.model.dto.MentorCreateSessionRequest;
 import com.czl.teamupbackend.model.dto.MentorSessionListRequest;
 import com.czl.teamupbackend.model.entity.AiChatMessageIndex;
 import com.czl.teamupbackend.model.entity.AiChatSession;
+import com.czl.teamupbackend.model.entity.AiAgentRun;
+import com.czl.teamupbackend.model.entity.AiAgentStep;
 import com.czl.teamupbackend.model.mongo.MentorChatMessageDoc;
 import com.czl.teamupbackend.model.vo.MentorChatHistoryVO;
 import com.czl.teamupbackend.model.vo.MentorChatMessageItemVO;
+import com.czl.teamupbackend.model.vo.MentorAgentStepVO;
 import com.czl.teamupbackend.model.vo.MentorSessionItemVO;
 import com.czl.teamupbackend.model.vo.MentorSessionListVO;
 import com.czl.teamupbackend.repository.MentorChatMessageRepository;
+import com.czl.teamupbackend.mapper.AiAgentRunMapper;
+import com.czl.teamupbackend.mapper.AiAgentStepMapper;
 import com.czl.teamupbackend.service.IAiChatMessageIndexService;
 import com.czl.teamupbackend.service.IAiChatSessionService;
+import com.czl.teamupbackend.service.AgentRunService;
 import com.czl.teamupbackend.service.IMentorChatService;
 import com.czl.teamupbackend.service.MemoryLifecycleService;
 import com.czl.teamupbackend.service.ITeamService;
+import com.czl.teamupbackend.service.IDocumentService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.time.Duration;
@@ -59,6 +66,7 @@ public class MentorChatServiceImpl implements IMentorChatService {
     private static final String EVENT_DONE = "done";
     private static final String EVENT_META = "meta";
     private static final String EVENT_TITLE = "title";
+    private static final String EVENT_AGENT_STATUS = "agent-status";
     private static final String SENDER_USER = "USER";
     private static final String SENDER_ASSISTANT = "ASSISTANT";
     private static final String MSG_TYPE_TEXT = "TEXT";
@@ -72,7 +80,14 @@ public class MentorChatServiceImpl implements IMentorChatService {
     private static final int SESSION_TITLE_PREFIX_MAX = 18;
     private static final String TOOL_CTX_USER_ID = "userId";
     private static final String TOOL_CTX_TEAM_ID = "teamId";
-    private static final String SYSTEM_PROMPT = "你是 TeamUp 平台的智能导师，负责大学生小组协作的助手,解答用户提出的小组协作的问题和小组任务中的知识性问题";
+    private static final String TOOL_CTX_AGENT_RUN_ID = "agentRunId";
+    private static final String SYSTEM_PROMPT = """
+        你是 TeamUp 平台的智能导师，负责大学生小组协作的助手。
+        你运行在受控的自适应 Plan + ReAct 引擎中：先在内部确定最短可行步骤，再直接回答或调用允许的只读工具。
+        简单解释应在一次回复中结束；只有需要实时小组数据时才调用工具。不要展示思维链、隐藏推理或工具参数，只给用户简洁的结论、依据和下一步建议。
+        当前仅开放只读工具。涉及创建任务、分配成员、修改或删除数据时，只能生成明确草稿并提示用户确认，绝不能声称已写入业务数据。
+        回答必须基于已给出的上下文或工具结果；信息不足时说明缺失内容，不得编造。
+        """;
     private static final int HISTORY_WINDOW_MAX_TOKENS = 4000;
     private static final int TITLE_GENERATION_TIMEOUT_SECONDS = 15;
     private static final Duration MESSAGE_TOKEN_CACHE_TTL = Duration.ofDays(7);
@@ -93,6 +108,10 @@ public class MentorChatServiceImpl implements IMentorChatService {
     private final TokenCountEstimator tokenCountEstimator;
     private final MemoryLifecycleService memoryLifecycleService;
     private final ITeamService teamService;
+    private final AgentRunService agentRunService;
+    private final IDocumentService documentService;
+    private final AiAgentRunMapper agentRunMapper;
+    private final AiAgentStepMapper agentStepMapper;
 
     @Value("${spring.ai.openai.summary.model}")
     private String summaryModel;
@@ -113,15 +132,23 @@ public class MentorChatServiceImpl implements IMentorChatService {
         String sessionType = resolveSessionType(request.getSessionType());
         validateSessionScope(sessionType, request.getDocumentId());
         message = appendSelectedTextQuote(message, request, sessionType);
+        String mentionedDocumentReference = documentService.buildMentorMentionReference(
+            userId, request.getTeamId(), request.getMentionedDocumentIds());
+        String storedUserMessage = mentionedDocumentReference.isBlank()
+            ? message
+            : message + "\n\n> 引用文档：" + mentionedDocumentReference;
+        String modelPrompt = storedUserMessage + documentService.buildMentorMentionContext(
+            userId, request.getTeamId(), request.getMentionedDocumentIds());
 
         AiChatSession session = getOrCreateSession(userId, request);
         boolean shouldGenerateTitle = isFirstRoundSession(session);
         String traceId = UUID.randomUUID().toString().replace("-", "");
         LocalDateTime now = LocalDateTime.now();
-        int currentPromptTokenCount = estimateUserPromptTokenCount(message);
+        int currentPromptTokenCount = estimateUserPromptTokenCount(modelPrompt);
 
         AiChatMessageIndex userMsgIndex = buildMsgIndex(session, userId, SENDER_USER, traceId, STATUS_DONE);
-        String userMongoId = createMongoMessage(userMsgIndex.getId(), session, userId, SENDER_USER, message, traceId, now, null);
+        String userMongoId = createMongoMessage(
+            userMsgIndex.getId(), session, userId, SENDER_USER, storedUserMessage, traceId, now, null);
         userMsgIndex.setMongoMessageId(userMongoId);
         userMsgIndex.setTokenCount(currentPromptTokenCount);
         aiChatMessageIndexService.save(userMsgIndex);
@@ -137,10 +164,16 @@ public class MentorChatServiceImpl implements IMentorChatService {
         SseEmitter emitter = new SseEmitter(0L);
         Map<String, Object> toolContext = buildToolContext(userId, request.getTeamId(), session.getTeamId());
         String historyPrompt = buildSlidingWindowHistoryPrompt(session.getId(), userMsgIndex.getId());
-        final String finalUserPrompt = message;
+        var agentRun = agentRunService.start(
+            session.getId(), session.getTeamId(), userId, traceId, sessionType, storedUserMessage, currentPromptTokenCount);
+        toolContext.put(TOOL_CTX_AGENT_RUN_ID, agentRun.getId());
+        agentRunService.registerListener(agentRun.getId(), progress -> sendAgentStatus(emitter, progress));
+        final String finalUserPrompt = modelPrompt;
+        final String finalStoredUserMessage = storedUserMessage;
         mvcAsyncTaskExecutor.execute(() -> doStream(
             emitter, finalUserPrompt, historyPrompt,
-            session, traceId, assistantMsgIndex, assistantMongoId, toolContext, shouldGenerateTitle));
+            session, traceId, assistantMsgIndex, assistantMongoId, toolContext, shouldGenerateTitle,
+            agentRun.getId(), finalStoredUserMessage));
         return emitter;
     }
 
@@ -177,13 +210,15 @@ public class MentorChatServiceImpl implements IMentorChatService {
                           AiChatSession session, String traceId,
                           AiChatMessageIndex assistantMsgIndex, String assistantMongoId,
                           Map<String, Object> toolContext,
-                          boolean shouldGenerateTitle) {
+                          boolean shouldGenerateTitle, Long agentRunId, String storedUserMessage) {
         StringBuilder assistantFullText = new StringBuilder();
         UsageUsageHolder usageHolder = new UsageUsageHolder();
         try {
             emitter.send(SseEmitter.event()
                 .name(EVENT_META)
-                .data("{\"sessionId\":\"" + session.getId() + "\",\"traceId\":\"" + traceId + "\"}"));
+                .data("{\"sessionId\":\"" + session.getId() + "\",\"traceId\":\"" + traceId
+                    + "\",\"agentRunId\":\"" + agentRunId + "\"}"));
+            agentRunService.markPlanning(agentRunId);
 
             ChatClient chatClient = chatClientBuilder.build();
             OpenAiChatOptions requestOptions = OpenAiChatOptions.builder()
@@ -193,7 +228,8 @@ public class MentorChatServiceImpl implements IMentorChatService {
                 .system(buildSystemPrompt(historyPrompt))
                 .user(message)
                 .options(requestOptions)
-                .toolNames("queryTeamOverview", "queryTeamMembers", "queryTeamTaskLists", "queryTeamDocuments")
+                .toolNames("queryTeamOverview", "queryTeamMembers", "queryTeamTaskLists", "queryTeamDocuments",
+                    "queryDocumentFullText", "queryTeamWorkProfile")
                 .toolContext(toolContext);
             promptSpec.stream()
                 .chatResponse()
@@ -202,6 +238,9 @@ public class MentorChatServiceImpl implements IMentorChatService {
                     String chunk = extractChunkContent(chatResponse);
                     if (chunk == null || chunk.isEmpty()) {
                         return;
+                    }
+                    if (assistantFullText.isEmpty()) {
+                        agentRunService.markAnswering(agentRunId);
                     }
                     assistantFullText.append(chunk);
                     try {
@@ -219,6 +258,8 @@ public class MentorChatServiceImpl implements IMentorChatService {
                 .doOnComplete(() -> {
                     LocalDateTime endAt = LocalDateTime.now();
                     int assistantTokenCount = resolveCompletionTokens(usageHolder, assistantFullText.toString());
+                    agentRunService.complete(agentRunId, assistantTokenCount);
+                    agentRunService.unregisterListener(agentRunId);
                     updateMongoMessageContent(assistantMongoId, assistantFullText.toString(), endAt);
                     markMsgDone(assistantMsgIndex.getId(), assistantTokenCount);
                     assistantMsgIndex.setStatus(STATUS_DONE);
@@ -229,13 +270,15 @@ public class MentorChatServiceImpl implements IMentorChatService {
                     completeStreamAfterOptionalTitle(
                         emitter,
                         session,
-                        message,
+                        storedUserMessage,
                         assistantFullText.toString(),
                         traceId,
                         shouldGenerateTitle
                     );
                 })
                 .doOnError(ex -> {
+                    agentRunService.fail(agentRunId, ex.getMessage());
+                    agentRunService.unregisterListener(agentRunId);
                     markMsgFailed(assistantMsgIndex.getId(), ex.getMessage());
                     refreshSessionStats(session.getId(), LocalDateTime.now());
                     log.error("Mentor stream failed, sessionId={}, traceId={}", session.getId(), traceId, ex);
@@ -243,6 +286,8 @@ public class MentorChatServiceImpl implements IMentorChatService {
                 })
                 .blockLast();
         } catch (Exception e) {
+            agentRunService.fail(agentRunId, e.getMessage());
+            agentRunService.unregisterListener(agentRunId);
             markMsgFailed(assistantMsgIndex.getId(), e.getMessage());
             refreshSessionStats(session.getId(), LocalDateTime.now());
             log.error("Mentor stream transport failed, sessionId={}, traceId={}", session.getId(), traceId, e);
@@ -316,16 +361,24 @@ public class MentorChatServiceImpl implements IMentorChatService {
             .collect(Collectors.toList());
         Map<String, MentorChatMessageDoc> docMap = mentorChatMessageRepository.findByIdIn(mongoIds).stream()
             .collect(Collectors.toMap(MentorChatMessageDoc::getId, d -> d, (a, b) -> a));
+        Map<String, AiAgentRun> runByTraceId = loadAgentRunsByTraceId(indexes);
+        Map<Long, List<MentorAgentStepVO>> stepsByRunId = loadAgentStepsByRunId(runByTraceId.values());
 
         List<MentorChatMessageItemVO> messages = indexes.stream()
             .map(i -> {
                 MentorChatMessageDoc doc = docMap.get(i.getMongoMessageId());
+                AiAgentRun agentRun = SENDER_ASSISTANT.equals(i.getSenderType())
+                    ? runByTraceId.get(i.getTraceId())
+                    : null;
                 return MentorChatMessageItemVO.builder()
                     .messageId(String.valueOf(i.getId()))
                     .senderType(i.getSenderType())
                     .messageType(i.getMessageType())
                     .content(doc == null ? "" : doc.getContent())
                     .createdAt(i.getCreatedAt())
+                    .agentRunId(agentRun == null ? null : String.valueOf(agentRun.getId()))
+                    .agentStatus(agentRun == null ? null : agentRun.getStatus())
+                    .agentSteps(agentRun == null ? List.of() : stepsByRunId.getOrDefault(agentRun.getId(), List.of()))
                     .build();
             })
             .collect(Collectors.toList());
@@ -336,6 +389,45 @@ public class MentorChatServiceImpl implements IMentorChatService {
             .sessionId(String.valueOf(request.getSessionId()))
             .messages(messages)
             .build();
+    }
+
+    private Map<String, AiAgentRun> loadAgentRunsByTraceId(List<AiChatMessageIndex> indexes) {
+        List<String> traceIds = indexes.stream()
+            .filter(index -> SENDER_ASSISTANT.equals(index.getSenderType()))
+            .map(AiChatMessageIndex::getTraceId)
+            .filter(traceId -> traceId != null && !traceId.isBlank())
+            .distinct()
+            .toList();
+        if (traceIds.isEmpty()) {
+            return Map.of();
+        }
+        return agentRunMapper.selectList(new LambdaQueryWrapper<AiAgentRun>()
+                .in(AiAgentRun::getTraceId, traceIds))
+            .stream()
+            .collect(Collectors.toMap(AiAgentRun::getTraceId, run -> run, (newer, ignored) -> newer));
+    }
+
+    private Map<Long, List<MentorAgentStepVO>> loadAgentStepsByRunId(java.util.Collection<AiAgentRun> runs) {
+        List<Long> runIds = runs.stream()
+            .map(AiAgentRun::getId)
+            .filter(java.util.Objects::nonNull)
+            .distinct()
+            .toList();
+        if (runIds.isEmpty()) {
+            return Map.of();
+        }
+        return agentStepMapper.selectList(new LambdaQueryWrapper<AiAgentStep>()
+                .in(AiAgentStep::getRunId, runIds)
+                .orderByAsc(AiAgentStep::getRunId)
+                .orderByAsc(AiAgentStep::getStepNo))
+            .stream()
+            .collect(Collectors.groupingBy(AiAgentStep::getRunId, LinkedHashMap::new, Collectors.mapping(step ->
+                MentorAgentStepVO.builder()
+                    .stepType(step.getStepType())
+                    .toolName(step.getToolName())
+                    .status(step.getStatus())
+                    .summary(step.getDecisionSummary())
+                    .build(), Collectors.toList())));
     }
 
     @Override
@@ -535,6 +627,16 @@ public class MentorChatServiceImpl implements IMentorChatService {
                 .data(objectMapper.writeValueAsString(payload)));
         } catch (Exception e) {
             log.warn("Send mentor session title event failed, sessionId={}, traceId={}", sessionId, traceId, e);
+        }
+    }
+
+    private void sendAgentStatus(SseEmitter emitter, AgentRunService.AgentRunProgress progress) {
+        try {
+            emitter.send(SseEmitter.event()
+                .name(EVENT_AGENT_STATUS)
+                .data(objectMapper.writeValueAsString(progress)));
+        } catch (IOException e) {
+            log.debug("Send agent status failed, runId={}", progress.runId(), e);
         }
     }
 

@@ -10,6 +10,9 @@ import com.czl.teamupbackend.model.dto.DocumentListQueryRequest;
 import com.czl.teamupbackend.model.dto.DocumentUpdateRequest;
 import com.czl.teamupbackend.model.dto.DocumentUploadMetaRequest;
 import com.czl.teamupbackend.model.dto.MentorSidebarDocRequest;
+import com.czl.teamupbackend.model.dto.MentorDocumentMentionSearchRequest;
+import com.czl.teamupbackend.model.vo.MentorDocumentMentionVO;
+import java.util.List;
 import com.czl.teamupbackend.model.vo.DocumentListVO;
 import com.czl.teamupbackend.model.vo.MentorSidebarDocListVO;
 import com.czl.teamupbackend.service.IDocumentService;
@@ -53,6 +56,18 @@ public class DocumentController {
             throw new BizException(400, "参数不完整");
         }
         return Result.success(documentService.listMentorSidebarDocs(userId, request.getTeamId(), request.getType()));
+    }
+
+    @PostMapping("/mentor-mention-search")
+    public Result<List<MentorDocumentMentionVO>> mentorMentionSearch(@RequestBody MentorDocumentMentionSearchRequest request) {
+        Long userId = UserContext.getCurrentUserId();
+        if (userId == null) {
+            throw new BizException(401, "未登录");
+        }
+        if (request == null || request.getTeamId() == null) {
+            throw new BizException(400, "teamId不能为空");
+        }
+        return Result.success(documentService.searchMentorMentionDocuments(userId, request.getTeamId(), request.getKeyword()));
     }
 
     @PostMapping("/upload")
