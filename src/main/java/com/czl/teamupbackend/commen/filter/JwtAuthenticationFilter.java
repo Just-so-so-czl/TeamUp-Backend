@@ -77,6 +77,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             || path.startsWith("/user/register")
             || path.startsWith("/ws")
             || path.startsWith("/ws-notify")
+            || path.startsWith("/internal/collaboration-summary")
             || path.startsWith("/error")
             || path.startsWith("/v3/api-docs")
             || path.startsWith("/swagger-ui")

@@ -7,11 +7,13 @@ import com.czl.teamupbackend.mapper.DocumentMapper;
 import com.czl.teamupbackend.mapper.TeamMapper;
 import com.czl.teamupbackend.mapper.TeamMemberMapper;
 import com.czl.teamupbackend.mapper.UserMapper;
+import com.czl.teamupbackend.event.DocumentResourceUploadedEvent;
 import com.czl.teamupbackend.model.entity.Document;
 import com.czl.teamupbackend.model.entity.Team;
 import com.czl.teamupbackend.model.entity.TeamMember;
 import com.czl.teamupbackend.model.entity.User;
 import com.czl.teamupbackend.model.enums.TeamMemberRoleEnum;
+import com.czl.teamupbackend.model.mongo.DocumentContentDoc;
 import com.czl.teamupbackend.model.vo.DocumentItemVO;
 import com.czl.teamupbackend.model.vo.DocumentListVO;
 import com.czl.teamupbackend.model.vo.MentorSidebarDocItemVO; 
@@ -28,6 +30,10 @@ import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -39,6 +45,7 @@ public class  DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> 
     private static final int TYPE_RESOURCE = 1;
     private static final int TYPE_COLLAB = 2;
     private static final String COLLAB_PLACEHOLDER_FILE_TYPE = "collab";
+    private static final String COLLABORATION_DOCUMENT_COLLECTION = "collaboration_documents";
     private static final Set<String> ALLOWED_FILE_TYPES = Set.of("pdf", "docx", "md", "txt");
     private static final DateTimeFormatter MENTOR_DATE_FMT = DateTimeFormatter.ofPattern("MM/dd");
 
@@ -46,6 +53,8 @@ public class  DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> 
     private final TeamMemberMapper teamMemberMapper;
     private final UserMapper userMapper;
     private final IOssService ossService;
+    private final ApplicationEventPublisher applicationEventPublisher;
+    private final MongoTemplate mongoTemplate;
 
     @Override
     public DocumentListVO listTeamDocuments(Long currentUserId, Long teamId, Integer type) {
@@ -128,6 +137,9 @@ public class  DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> 
         doc.setCreateTime(LocalDateTime.now());
         doc.setUpdateTime(LocalDateTime.now());
         this.save(doc);
+        if (type == TYPE_RESOURCE) {
+            applicationEventPublisher.publishEvent(new DocumentResourceUploadedEvent(doc.getId()));
+        }
 
         log.info("Document uploaded, teamId={}, type={}, documentId={}, operatorUserId={}", teamId, type, doc.getId(), currentUserId);
     }
@@ -183,7 +195,24 @@ public class  DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> 
         if (document.getStoragePath() != null && !document.getStoragePath().isBlank()) {
             ossService.delete(document.getStoragePath());
         }
+        if (document.getType() != null && document.getType() == TYPE_RESOURCE) {
+            long deletedCount = mongoTemplate.remove(
+                Query.query(Criteria.where("documentId").is(documentId)),
+                DocumentContentDoc.class
+            ).getDeletedCount();
+            log.info("Resource document content deleted from MongoDB, documentId={}, deletedCount={}, operatorUserId={}",
+                documentId, deletedCount, currentUserId);
+        } else if (document.getType() != null && document.getType() == TYPE_COLLAB) {
+            long deletedCount = mongoTemplate.remove(
+                Query.query(Criteria.where("docId").is(String.valueOf(documentId))),
+                COLLABORATION_DOCUMENT_COLLECTION
+            ).getDeletedCount();
+            log.info("Collaboration document content deleted from MongoDB, documentId={}, deletedCount={}, operatorUserId={}",
+                documentId, deletedCount, currentUserId);
+        }
         this.removeById(documentId);
+        log.info("Document deleted, teamId={}, type={}, documentId={}, operatorUserId={}",
+            document.getTeamId(), document.getType(), documentId, currentUserId);
     }
 
     @Override

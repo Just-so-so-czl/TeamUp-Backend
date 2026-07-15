@@ -23,4 +23,19 @@ public class MentorChatRequest {
      * 协作文档ID，sessionType=COLLAB_DOC 时使用。
      */
     private Long documentId;
+
+    /**
+     * 协作文档编辑器中被用户选中的原文。
+     */
+    private String selectedText;
+
+    /**
+     * 选中文本的起始行号，从 1 开始。
+     */
+    private Integer selectedStartLine;
+
+    /**
+     * 选中文本的结束行号，从 1 开始。
+     */
+    private Integer selectedEndLine;
 }

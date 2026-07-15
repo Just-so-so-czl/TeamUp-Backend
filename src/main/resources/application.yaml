@@ -97,3 +97,9 @@ aliyun:
 
 task-reminder:
   scan-on-startup: ${TASK_REMINDER_SCAN_ON_STARTUP:false}
+
+collaboration-summary:
+  # 生产环境请通过 COLLABORATION_SUMMARY_INTERNAL_TOKEN 覆盖，且仅允许协同服务访问内部接口。
+  internal-token: ${COLLABORATION_SUMMARY_INTERNAL_TOKEN:teamup-local-collaboration-summary-token}
+  delay-queue:
+    scan-interval-ms: ${COLLABORATION_SUMMARY_SCAN_INTERVAL_MS:10000}

@@ -3,6 +3,7 @@ package com.czl.teamupbackend.service.impl;
 import com.aliyun.oss.OSS;
 import com.aliyun.oss.OSSClientBuilder;
 import com.aliyun.oss.HttpMethod;
+import com.aliyun.oss.model.OSSObject;
 import com.aliyun.oss.model.ObjectMetadata;
 import com.aliyun.oss.model.PutObjectRequest;
 import com.aliyun.oss.model.ResponseHeaderOverrides;
@@ -11,6 +12,9 @@ import com.czl.teamupbackend.commen.properties.OssProperties;
 import com.czl.teamupbackend.service.IOssService;
 import java.net.URI;
 import java.net.URL;
+import java.io.FilterInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.Date;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -84,6 +88,34 @@ public class OssServiceImpl implements IOssService {
     @Override
     public String generateDownloadUrl(String objectKeyOrUrl, String downloadFileName) {
         return generateDownloadUrl(objectKeyOrUrl, downloadFileName, 5 * 60 * 1000L);
+    }
+
+    @Override
+    public InputStream download(String objectKeyOrUrl) {
+        String objectKey = toObjectKey(objectKeyOrUrl);
+        OSS ossClient = new OSSClientBuilder().build(
+            ossProperties.getEndpoint(),
+            ossProperties.getAccessKeyId(),
+            ossProperties.getAccessKeySecret()
+        );
+        try {
+            OSSObject ossObject = ossClient.getObject(ossProperties.getBucketName(), objectKey);
+            return new FilterInputStream(ossObject.getObjectContent()) {
+                @Override
+                public void close() throws IOException {
+                    try {
+                        super.close();
+                    } finally {
+                        ossObject.close();
+                        ossClient.shutdown();
+                    }
+                }
+            };
+        } catch (Exception e) {
+            ossClient.shutdown();
+            log.error("OSS download failed, objectKey={}", objectKey, e);
+            throw new RuntimeException("从OSS下载文件失败", e);
+        }
     }
 
     @Override

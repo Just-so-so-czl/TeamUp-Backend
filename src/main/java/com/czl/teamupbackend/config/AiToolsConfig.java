@@ -4,6 +4,7 @@ import com.czl.teamupbackend.commen.exception.BizException;
 import com.czl.teamupbackend.model.dto.AiTeamDocumentsToolRequest;
 import com.czl.teamupbackend.model.dto.TeamIdToolRequest;
 import com.czl.teamupbackend.model.dto.TeamDetailRequest;
+import com.czl.teamupbackend.model.mongo.DocumentContentDoc;
 import com.czl.teamupbackend.model.vo.DocumentItemVO;
 import com.czl.teamupbackend.model.vo.DocumentListVO;
 import com.czl.teamupbackend.model.vo.TeamDetailVO;
@@ -20,12 +21,17 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.BiFunction;
+import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Description;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 
 @Slf4j
 @Configuration
@@ -158,7 +164,8 @@ public class AiToolsConfig {
     @Description("获取当前小组文档列表，可按文档类型筛选：1 表示资料文档，2 表示协作文档；不传类型时返回两类文档")
     public BiFunction<AiTeamDocumentsToolRequest, ToolContext, Map<String, Object>> queryTeamDocuments(
         IDocumentService documentService,
-        ITeamService teamService
+        ITeamService teamService,
+        MongoTemplate mongoTemplate
     ) {
         return (request, toolContext) -> {
             ToolIdentity identity = resolveIdentity(request, toolContext, "查询小组文档失败");
@@ -177,14 +184,18 @@ public class AiToolsConfig {
             if (type == null) {
                 DocumentListVO resourceDocs = documentService.listTeamDocuments(identity.userId(), identity.teamId(), DOCUMENT_TYPE_RESOURCE);
                 DocumentListVO collabDocs = documentService.listTeamDocuments(identity.userId(), identity.teamId(), DOCUMENT_TYPE_COLLAB);
-                result.put("resourceDocuments", sanitizeDocuments(resourceDocs.getDocuments()));
-                result.put("collaborationDocuments", sanitizeDocuments(collabDocs.getDocuments()));
+                List<DocumentItemVO> allDocuments = new ArrayList<>();
+                allDocuments.addAll(resourceDocs.getDocuments());
+                allDocuments.addAll(collabDocs.getDocuments());
+                Map<Long, String> aiSummaryMap = loadAiSummaryMap(allDocuments, mongoTemplate);
+                result.put("resourceDocuments", sanitizeDocuments(resourceDocs.getDocuments(), aiSummaryMap));
+                result.put("collaborationDocuments", sanitizeDocuments(collabDocs.getDocuments(), aiSummaryMap));
                 result.put("currentUserCanUploadResource", resourceDocs.getCurrentUserCanUpload());
                 result.put("currentUserCanUploadCollaboration", collabDocs.getCurrentUserCanUpload());
                 return result;
             }
             DocumentListVO documents = documentService.listTeamDocuments(identity.userId(), identity.teamId(), type);
-            result.put("documents", sanitizeDocuments(documents.getDocuments()));
+            result.put("documents", sanitizeDocuments(documents.getDocuments(), loadAiSummaryMap(documents.getDocuments(), mongoTemplate)));
             result.put("currentUserCanUpload", documents.getCurrentUserCanUpload());
             return result;
         };
@@ -263,7 +274,7 @@ public class AiToolsConfig {
         return result;
     }
 
-    private List<Map<String, Object>> sanitizeDocuments(List<DocumentItemVO> documents) {
+    private List<Map<String, Object>> sanitizeDocuments(List<DocumentItemVO> documents, Map<Long, String> aiSummaryMap) {
         if (documents == null) {
             return List.of();
         }
@@ -279,9 +290,62 @@ public class AiToolsConfig {
             item.put("creatorId", document.getCreatorId());
             item.put("creatorName", document.getCreatorName());
             item.put("createTime", document.getCreateTime());
+            item.put("aiSummary", aiSummaryMap.get(document.getDocumentId()));
             result.add(item);
         }
         return result;
+    }
+
+    /**
+     * 资料文档与协作文档的摘要分别位于不同的 MongoDB 集合；按类型批量查询，
+     * 避免 AI 工具在遍历文档列表时产生 N+1 次 MongoDB 查询。
+     */
+    private Map<Long, String> loadAiSummaryMap(List<DocumentItemVO> documents, MongoTemplate mongoTemplate) {
+        if (documents == null || documents.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, String> summaryMap = new HashMap<>();
+        List<Long> resourceDocumentIds = documents.stream()
+            .filter(document -> Integer.valueOf(DOCUMENT_TYPE_RESOURCE).equals(document.getType()))
+            .map(DocumentItemVO::getDocumentId)
+            .filter(java.util.Objects::nonNull)
+            .distinct()
+            .toList();
+        if (!resourceDocumentIds.isEmpty()) {
+            List<DocumentContentDoc> contents = mongoTemplate.find(
+                Query.query(Criteria.where("documentId").in(resourceDocumentIds)),
+                DocumentContentDoc.class
+            );
+            for (DocumentContentDoc content : contents) {
+                summaryMap.put(content.getDocumentId(), content.getAiSummary());
+            }
+        }
+
+        Set<String> collaborationDocumentIds = documents.stream()
+            .filter(document -> Integer.valueOf(DOCUMENT_TYPE_COLLAB).equals(document.getType()))
+            .map(DocumentItemVO::getDocumentId)
+            .filter(java.util.Objects::nonNull)
+            .map(String::valueOf)
+            .collect(Collectors.toSet());
+        if (!collaborationDocumentIds.isEmpty()) {
+            List<org.bson.Document> contents = mongoTemplate.find(
+                Query.query(Criteria.where("docId").in(collaborationDocumentIds)),
+                org.bson.Document.class,
+                "collaboration_documents"
+            );
+            for (org.bson.Document content : contents) {
+                String documentId = content.getString("docId");
+                String summary = content.getString("ai_summary");
+                if (documentId != null) {
+                    try {
+                        summaryMap.put(Long.valueOf(documentId), summary);
+                    } catch (NumberFormatException e) {
+                        log.warn("Ignoring collaboration document summary with invalid documentId={}", documentId);
+                    }
+                }
+            }
+        }
+        return summaryMap;
     }
 
     private Long resolveTeamIdFromContextFirst(ToolContext toolContext, Long requestTeamId, String toolName) {

@@ -24,6 +24,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -109,7 +110,9 @@ public class MentorChatServiceImpl implements IMentorChatService {
             throw new BizException(400, "消息内容不能为空");
         }
         teamService.validateTeamAccessible(userId, request.getTeamId());
-        validateSessionScope(resolveSessionType(request.getSessionType()), request.getDocumentId());
+        String sessionType = resolveSessionType(request.getSessionType());
+        validateSessionScope(sessionType, request.getDocumentId());
+        message = appendSelectedTextQuote(message, request, sessionType);
 
         AiChatSession session = getOrCreateSession(userId, request);
         boolean shouldGenerateTitle = isFirstRoundSession(session);
@@ -134,10 +137,40 @@ public class MentorChatServiceImpl implements IMentorChatService {
         SseEmitter emitter = new SseEmitter(0L);
         Map<String, Object> toolContext = buildToolContext(userId, request.getTeamId(), session.getTeamId());
         String historyPrompt = buildSlidingWindowHistoryPrompt(session.getId(), userMsgIndex.getId());
+        final String finalUserPrompt = message;
         mvcAsyncTaskExecutor.execute(() -> doStream(
-            emitter, message, historyPrompt,
+            emitter, finalUserPrompt, historyPrompt,
             session, traceId, assistantMsgIndex, assistantMongoId, toolContext, shouldGenerateTitle));
         return emitter;
+    }
+
+    private String appendSelectedTextQuote(String message, MentorChatRequest request, String sessionType) {
+        String selectedText = request.getSelectedText();
+        if (selectedText == null || selectedText.isBlank()) {
+            return message;
+        }
+        if (!SESSION_TYPE_COLLAB_DOC.equals(sessionType)) {
+            throw new BizException(400, "仅协作文档助手支持引用选中文本");
+        }
+
+        String normalizedText = selectedText.replace("\r\n", "\n").replace('\r', '\n');
+        Integer startLine = request.getSelectedStartLine();
+        Integer endLine = request.getSelectedEndLine();
+        String lineRange = buildSelectedLineRange(startLine, endLine);
+        String markdownQuote = Arrays.stream(normalizedText.split("\n", -1))
+            .map(line -> "> " + line)
+            .collect(Collectors.joining("\n"));
+        return message + "\n\n> 引用协作文档" + lineRange + "：\n" + markdownQuote;
+    }
+
+    private String buildSelectedLineRange(Integer startLine, Integer endLine) {
+        if (startLine == null || startLine <= 0) {
+            return "内容";
+        }
+        if (endLine == null || endLine <= startLine) {
+            return "第" + startLine + "行";
+        }
+        return "第" + startLine + "至第" + endLine + "行";
     }
 
     private void doStream(SseEmitter emitter, String message, String historyPrompt,
