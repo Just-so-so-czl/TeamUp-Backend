@@ -4,6 +4,7 @@ import com.czl.teamupbackend.commen.exception.BizException;
 import com.czl.teamupbackend.service.AgentRunService;
 import com.czl.teamupbackend.mapper.DocumentMapper;
 import com.czl.teamupbackend.model.dto.AiDocumentFullTextToolRequest;
+import com.czl.teamupbackend.model.dto.AiEmailProposalToolRequest;
 import com.czl.teamupbackend.model.dto.AiTeamDocumentsToolRequest;
 import com.czl.teamupbackend.model.dto.TeamIdToolRequest;
 import com.czl.teamupbackend.model.dto.TeamDetailRequest;
@@ -22,6 +23,7 @@ import com.czl.teamupbackend.service.ITaskListService;
 import com.czl.teamupbackend.service.ITeamMemberService;
 import com.czl.teamupbackend.service.ITeamService;
 import com.czl.teamupbackend.service.TeamWorkProfileService;
+import com.czl.teamupbackend.service.AgentEmailProposalService;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -285,6 +287,35 @@ public class AiToolsConfig {
     }
 
     @Bean
+    @Description("生成一份给当前小组指定成员发送邮件的待确认提案。recipientUserId 必须严格使用本轮 queryTeamMembers 工具结果中的 userId，禁止猜测、根据昵称或邮箱转换、或使用历史记忆中的ID。若返回 recipientValid=false，必须先调用 queryTeamMembers 后再重试。此工具绝不会发送邮件；用户将在界面中编辑并确认后由传统后端API执行。")
+    public BiFunction<AiEmailProposalToolRequest, ToolContext, Map<String, Object>> proposeTeamEmail(
+        AgentEmailProposalService proposalService,
+        AgentRunService agentRunService
+    ) {
+        return (request, toolContext) -> {
+            Long runId = getLongValue(toolContext, TOOL_CTX_AGENT_RUN_ID);
+            Long userId = getLongValue(toolContext, TOOL_CTX_USER_ID);
+            Long teamId = getLongValue(toolContext, TOOL_CTX_TEAM_ID);
+            if (runId == null || userId == null || teamId == null) throw new BizException(400, "邮件提案缺少受控运行上下文");
+            recordReadTool(agentRunService, toolContext, "proposeTeamEmail", "正在生成可编辑的邮件发送提案");
+            try {
+                var proposal = proposalService.create(runId, userId, teamId, request);
+                return Map.of("proposalCreated", true, "recipientValid", true, "draftId", proposal.getDraftId(), "status", proposal.getStatus(),
+                    "message", "邮件草案已生成，等待用户编辑并确认发送");
+            } catch (BizException exception) {
+                if (isInvalidEmailRecipient(exception)) {
+                    return Map.of(
+                        "proposalCreated", false,
+                        "recipientValid", false,
+                        "message", "收件人不是当前小组成员。请先调用 queryTeamMembers，使用其本轮返回的精确 userId 后再生成邮件提案。"
+                    );
+                }
+                throw exception;
+            }
+        };
+    }
+
+    @Bean
     @Description("获取当前小组在协作过程中沉淀的工作画像，包括成员工作偏好、协作约定、长期规范、重复风险、复盘洞察和待协商议题；不返回小组资料、任务、进度或截止时间")
     public BiFunction<TeamIdToolRequest, ToolContext, Map<String, Object>> queryTeamWorkProfile(
         ITeamService teamService,
@@ -501,6 +532,13 @@ public class AiToolsConfig {
             return false;
         }
         return e.getCode() == 403 || e.getCode() == 404;
+    }
+
+    private boolean isInvalidEmailRecipient(BizException exception) {
+        return exception != null
+            && exception.getCode() != null
+            && exception.getCode() == 403
+            && "目标用户不是当前小组成员".equals(exception.getMessage());
     }
 
     private Map<String, Object> buildInvalidTeamOverview(Long teamId, String message) {

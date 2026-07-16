@@ -108,6 +108,7 @@ public class TeamMemberServiceImpl extends ServiceImpl<TeamMemberMapper, TeamMem
                 .teamId(teamId)
                 .teamName(team.getName())
                 .description(team.getDescription())
+                .totalDeadline(team.getTotalDeadline())
                 .createTime(team.getCreateTime())
                 .memberCount(memberList.size())
                 .userRoleCode(selfRoleCode)

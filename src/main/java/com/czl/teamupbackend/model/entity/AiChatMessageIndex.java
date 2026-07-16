@@ -67,7 +67,7 @@ public class AiChatMessageIndex implements Serializable {
     private String traceId;
 
     /**
-     * token用量
+     * 对应 Mongo chat_messages.content 的文本 token 数，不包含系统提示词、工具参数或 @ 文档上下文。
      */
     private Integer tokenCount;
 

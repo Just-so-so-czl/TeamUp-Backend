@@ -40,6 +40,8 @@ CREATE TABLE `team` (
     -- 小组描述：允许为空 (NULL)
                          `description` TEXT DEFAULT NULL COMMENT '小组简介',
 
+                         `total_deadline` DATETIME NOT NULL COMMENT '小组作业最终截止时间（总DDL）',
+
                          `create_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                          `update_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
 
@@ -49,6 +51,11 @@ CREATE TABLE `team` (
     -- 为 owner_id 建立索引，方便查询某个用户创建的所有小组
                          KEY `idx_owner_id` (`owner_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='小组/团队信息表';
+
+-- 已有数据库迁移：请先为历史小组人工回填合理的总DDL，再执行 NOT NULL 收紧。
+-- ALTER TABLE `team` ADD COLUMN `total_deadline` DATETIME NULL COMMENT '小组作业最终截止时间（总DDL）' AFTER `description`;
+-- UPDATE `team` SET `total_deadline` = '2026-12-31 23:59:59' WHERE `total_deadline` IS NULL;
+-- ALTER TABLE `team` MODIFY COLUMN `total_deadline` DATETIME NOT NULL COMMENT '小组作业最终截止时间（总DDL）';
 
 CREATE TABLE `team_member` (
     -- 雪花 ID (64位整数)
@@ -265,7 +272,7 @@ CREATE TABLE IF NOT EXISTS ai_chat_message_index (
     message_type      VARCHAR(32)  NOT NULL DEFAULT 'TEXT' COMMENT '消息类型:TEXT/TASK_SUGGESTION/SUMMARY/MEMORY_REF',
     mongo_message_id  VARCHAR(64)  NOT NULL COMMENT 'Mongo文档ID',
     trace_id          VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '链路追踪ID',
-    token_count       INT          NOT NULL DEFAULT 0 COMMENT '消息token数',
+    token_count       INT          NOT NULL DEFAULT 0 COMMENT 'Mongo chat_messages.content 的文本token数（不含提示词和文档上下文）',
     short_term_active TINYINT      NOT NULL DEFAULT 1 COMMENT '是否仍属于当前短期记忆窗口:0=否,1=是',
     status            TINYINT      NOT NULL DEFAULT 1 COMMENT '状态:1=PENDING,2=DONE,3=FAILED',
     error_msg         VARCHAR(512) NOT NULL DEFAULT '' COMMENT '失败原因',
@@ -373,3 +380,22 @@ CREATE TABLE IF NOT EXISTS ai_agent_step (
     KEY idx_run_created_at (run_id, created_at),
     KEY idx_status_created_at (status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI adaptive Plan and ReAct step audit';
+
+CREATE TABLE IF NOT EXISTS ai_action_draft (
+    id BIGINT NOT NULL COMMENT 'Snowflake draft ID',
+    run_id BIGINT NOT NULL COMMENT 'Agent run ID',
+    team_id BIGINT NOT NULL COMMENT 'Team ID',
+    creator_user_id BIGINT NOT NULL COMMENT 'User who must confirm this action',
+    action_type VARCHAR(32) NOT NULL COMMENT 'EMAIL_SEND',
+    status VARCHAR(32) NOT NULL COMMENT 'PENDING_CONFIRMATION/SENDING/EXECUTED/CANCELLED',
+    payload_json JSON NOT NULL COMMENT 'Editable proposal payload',
+    result_summary VARCHAR(500) NOT NULL DEFAULT '' COMMENT 'Execution result',
+    error_msg VARCHAR(500) NOT NULL DEFAULT '' COMMENT 'Execution error',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    executed_at DATETIME NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_run_action (run_id, action_type),
+    KEY idx_creator_status (creator_user_id, status),
+    KEY idx_team_created (team_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI controlled action proposal drafts';

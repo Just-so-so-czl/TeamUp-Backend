@@ -73,6 +73,12 @@ public class TaskServiceImpl extends ServiceImpl<TaskMapper, Task> implements IT
         if (deadline == null) {
             throw new BizException(400, "任务截止时间不能为空");
         }
+        if (team.getTotalDeadline() == null) {
+            throw new BizException(400, "该小组尚未设置总DDL，请先由组长补充");
+        }
+        if (deadline.isAfter(team.getTotalDeadline())) {
+            throw new BizException(400, "任务截止时间不能晚于小组总DDL");
+        }
         if (taskList.getDeadline() != null && deadline.isAfter(taskList.getDeadline())) {
             throw new BizException(400, "任务截止时间不能晚于任务清单截止时间");
         }

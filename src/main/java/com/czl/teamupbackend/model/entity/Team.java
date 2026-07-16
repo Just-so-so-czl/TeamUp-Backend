@@ -43,6 +43,9 @@ public class Team implements Serializable {
     @Schema(description = "小组简介")
     private String description;
 
+    @Schema(description = "小组作业最终截止时间")
+    private LocalDateTime totalDeadline;
+
     @Schema(description = "创建时间")
     private LocalDateTime createTime;
 

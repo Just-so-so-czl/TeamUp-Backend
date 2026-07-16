@@ -20,6 +20,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 @RequiredArgsConstructor
 public class AgentRunServiceImpl implements AgentRunService {
     private static final String STATUS_RUNNING = "RUNNING";
+    private static final String STATUS_WAITING_CONFIRMATION = "WAITING_CONFIRMATION";
     private static final String STATUS_COMPLETED = "COMPLETED";
     private static final String STATUS_FAILED = "FAILED";
     private static final int MAX_STEPS = 12;
@@ -62,6 +63,25 @@ public class AgentRunServiceImpl implements AgentRunService {
     }
 
     @Override
+    public void awaitConfirmation(Long runId, String summary) {
+        if (runId == null) return;
+        String safeSummary = limit(summary == null ? "等待用户确认后执行" : summary, 500);
+        agentRunMapper.updateById(new AiAgentRun().setId(runId).setStatus(STATUS_WAITING_CONFIRMATION));
+        recordStep(runId, "DRAFT", "proposeTeamEmail", safeSummary, STATUS_WAITING_CONFIRMATION);
+        publish(runId, STATUS_WAITING_CONFIRMATION, "DRAFT", "proposeTeamEmail", safeSummary);
+    }
+
+    @Override
+    public void resumeAfterConfirmedWrite(Long runId, String resultSummary) {
+        if (runId == null) return;
+        String safeSummary = limit(resultSummary == null ? "已按确认内容执行" : resultSummary, 500);
+        agentRunMapper.updateById(new AiAgentRun().setId(runId).setStatus(STATUS_RUNNING));
+        recordStep(runId, "WRITE", "sendTeamEmail", safeSummary, "DONE");
+        recordStep(runId, "VERIFY", "sendTeamEmail", "邮件发送结果已确认", "DONE");
+        complete(runId, 0);
+    }
+
+    @Override
     public void markAnswering(Long runId) {
         recordStep(runId, "ANSWER", null, "正在整合结果并生成答复", "RUNNING");
     }
@@ -69,6 +89,8 @@ public class AgentRunServiceImpl implements AgentRunService {
     @Override
     public void complete(Long runId, Integer completionTokens) {
         if (runId == null) return;
+        AiAgentRun run = agentRunMapper.selectById(runId);
+        if (run != null && STATUS_WAITING_CONFIRMATION.equals(run.getStatus())) return;
         agentRunMapper.updateById(new AiAgentRun().setId(runId).setStatus(STATUS_COMPLETED)
             .setCompletionTokens(completionTokens == null ? 0 : completionTokens)
             .setFinishedAt(LocalDateTime.now()).setErrorMsg(""));

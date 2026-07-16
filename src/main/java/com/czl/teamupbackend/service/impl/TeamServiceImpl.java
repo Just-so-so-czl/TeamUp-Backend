@@ -5,18 +5,23 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.czl.teamupbackend.commen.exception.BizException;
 import com.czl.teamupbackend.mapper.TeamMapper;
 import com.czl.teamupbackend.mapper.TeamMemberMapper;
+import com.czl.teamupbackend.mapper.TaskListMapper;
+import com.czl.teamupbackend.mapper.TaskMapper;
 import com.czl.teamupbackend.mapper.UserMapper;
 import com.czl.teamupbackend.model.dto.TeamCreateRequest;
 import com.czl.teamupbackend.model.dto.TeamDetailRequest;
 import com.czl.teamupbackend.model.dto.TeamUpdateRequest;
 import com.czl.teamupbackend.model.entity.Team;
 import com.czl.teamupbackend.model.entity.TeamMember;
+import com.czl.teamupbackend.model.entity.Task;
+import com.czl.teamupbackend.model.entity.TaskList;
 import com.czl.teamupbackend.model.entity.User;
 import com.czl.teamupbackend.model.enums.TeamMemberRoleEnum;
 import com.czl.teamupbackend.model.vo.TeamCreateResponseVO;
 import com.czl.teamupbackend.model.vo.TeamDetailVO;
 import com.czl.teamupbackend.service.ITeamService;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -37,6 +42,8 @@ public class TeamServiceImpl extends ServiceImpl<TeamMapper, Team> implements IT
 
     private final UserMapper userMapper;
     private final TeamMemberMapper teamMemberMapper;
+    private final TaskListMapper taskListMapper;
+    private final TaskMapper taskMapper;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -51,6 +58,7 @@ public class TeamServiceImpl extends ServiceImpl<TeamMapper, Team> implements IT
         Team team = new Team()
             .setName(request.getName().trim())
             .setDescription(request.getDescription() == null ? null : request.getDescription().trim())
+            .setTotalDeadline(request.getTotalDeadline())
             .setOwnerId(userId)
             .setInviteCode(generateUniqueInviteCode());
         save(team);
@@ -96,6 +104,7 @@ public class TeamServiceImpl extends ServiceImpl<TeamMapper, Team> implements IT
             .teamName(team.getName())
             .description(team.getDescription())
             .inviteCode(team.getInviteCode())
+            .totalDeadline(team.getTotalDeadline())
             .createTime(team.getCreateTime())
             .currentUserCaptain(team.getOwnerId() != null && team.getOwnerId().equals(userId))
             .build();
@@ -143,6 +152,9 @@ public class TeamServiceImpl extends ServiceImpl<TeamMapper, Team> implements IT
         if (description != null && description.length() > 300) {
             throw new BizException(400, "小组描述长度不能超过300");
         }
+        if (request.getTotalDeadline() == null) {
+            throw new BizException(400, "小组总DDL不能为空");
+        }
 
         Team team = getById(request.getTeamId());
         if (team == null) {
@@ -151,9 +163,11 @@ public class TeamServiceImpl extends ServiceImpl<TeamMapper, Team> implements IT
         if (team.getOwnerId() == null || !team.getOwnerId().equals(userId)) {
             throw new BizException(403, "只有组长可编辑小组信息");
         }
+        validateTotalDeadlineNotBeforeExistingSchedule(team.getId(), request.getTotalDeadline());
 
         team.setName(name);
         team.setDescription(description);
+        team.setTotalDeadline(request.getTotalDeadline());
         updateById(team);
         log.info("Team info updated, teamId={}, operatorUserId={}", team.getId(), userId);
     }
@@ -174,6 +188,29 @@ public class TeamServiceImpl extends ServiceImpl<TeamMapper, Team> implements IT
         }
         if (request.getDescription() != null && request.getDescription().trim().length() > 300) {
             throw new BizException(400, "小组描述长度不能超过300");
+        }
+        if (request.getTotalDeadline() == null) {
+            throw new BizException(400, "小组总DDL不能为空");
+        }
+    }
+
+    private void validateTotalDeadlineNotBeforeExistingSchedule(Long teamId, LocalDateTime totalDeadline) {
+        List<TaskList> taskLists = taskListMapper.selectList(new LambdaQueryWrapper<TaskList>()
+            .eq(TaskList::getTeamId, teamId));
+        for (TaskList taskList : taskLists) {
+            if (taskList.getDeadline() != null && taskList.getDeadline().isAfter(totalDeadline)) {
+                throw new BizException(400, "小组总DDL不能早于已有任务清单的截止时间");
+            }
+        }
+        List<Long> taskListIds = taskLists.stream().map(TaskList::getId).toList();
+        if (taskListIds.isEmpty()) {
+            return;
+        }
+        List<Task> tasks = taskMapper.selectList(new LambdaQueryWrapper<Task>().in(Task::getTaskListId, taskListIds));
+        boolean exceedsTotalDeadline = tasks.stream().anyMatch(task ->
+            task.getDeadline() != null && task.getDeadline().isAfter(totalDeadline));
+        if (exceedsTotalDeadline) {
+            throw new BizException(400, "小组总DDL不能早于已有任务的截止时间");
         }
     }
 

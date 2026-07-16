@@ -24,4 +24,6 @@ public class MentorChatMessageItemVO {
     private String agentStatus;
 
     private List<MentorAgentStepVO> agentSteps;
+
+    private AgentEmailProposalVO emailProposal;
 }

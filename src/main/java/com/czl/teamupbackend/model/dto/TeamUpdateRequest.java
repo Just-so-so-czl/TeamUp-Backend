@@ -1,5 +1,6 @@
 package com.czl.teamupbackend.model.dto;
 
+import java.time.LocalDateTime;
 import lombok.Data;
 
 @Data
@@ -10,5 +11,7 @@ public class TeamUpdateRequest {
     private String name;
 
     private String description;
+
+    private LocalDateTime totalDeadline;
 }
 

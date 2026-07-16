@@ -10,6 +10,8 @@ public interface AgentRunService {
     void unregisterListener(Long runId);
     void markPlanning(Long runId);
     void recordReadTool(Long runId, String toolName, String summary);
+    void awaitConfirmation(Long runId, String summary);
+    void resumeAfterConfirmedWrite(Long runId, String resultSummary);
     void markAnswering(Long runId);
     void complete(Long runId, Integer completionTokens);
     void fail(Long runId, String errorMessage);

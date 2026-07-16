@@ -154,6 +154,7 @@ public class TaskListServiceImpl extends ServiceImpl<TaskListMapper, TaskList> i
         if (deadline == null) {
             throw new BizException(400, "清单截止时间不能为空");
         }
+        validateDeadlineWithinTeamTotalDeadline(teamId, deadline);
 
         TaskList taskList = new TaskList();
         taskList.setTeamId(teamId);
@@ -190,6 +191,14 @@ public class TaskListServiceImpl extends ServiceImpl<TaskListMapper, TaskList> i
         }
         if (deadline == null) {
             throw new BizException(400, "清单截止时间不能为空");
+        }
+        validateDeadlineWithinTeamTotalDeadline(taskList.getTeamId(), deadline);
+        boolean hasTaskAfterDeadline = taskMapper.selectList(new LambdaQueryWrapper<Task>()
+                .eq(Task::getTaskListId, taskListId))
+            .stream()
+            .anyMatch(task -> task.getDeadline() != null && task.getDeadline().isAfter(deadline));
+        if (hasTaskAfterDeadline) {
+            throw new BizException(400, "任务清单截止时间不能早于其包含任务的截止时间");
         }
 
         taskList.setTitle(validTitle);
@@ -254,5 +263,18 @@ public class TaskListServiceImpl extends ServiceImpl<TaskListMapper, TaskList> i
         }
         TeamMemberRoleEnum roleEnum = TeamMemberRoleEnum.fromCode(teamMember.getRole());
         return roleEnum == TeamMemberRoleEnum.CAPTAIN || roleEnum == TeamMemberRoleEnum.LEADER;
+    }
+
+    private void validateDeadlineWithinTeamTotalDeadline(Long teamId, LocalDateTime deadline) {
+        Team team = teamMapper.selectById(teamId);
+        if (team == null) {
+            throw new BizException(404, "小组不存在");
+        }
+        if (team.getTotalDeadline() == null) {
+            throw new BizException(400, "该小组尚未设置总DDL，请先由组长补充");
+        }
+        if (deadline.isAfter(team.getTotalDeadline())) {
+            throw new BizException(400, "任务清单截止时间不能晚于小组总DDL");
+        }
     }
 }

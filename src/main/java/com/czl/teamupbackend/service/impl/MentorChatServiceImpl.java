@@ -14,6 +14,7 @@ import com.czl.teamupbackend.model.mongo.MentorChatMessageDoc;
 import com.czl.teamupbackend.model.vo.MentorChatHistoryVO;
 import com.czl.teamupbackend.model.vo.MentorChatMessageItemVO;
 import com.czl.teamupbackend.model.vo.MentorAgentStepVO;
+import com.czl.teamupbackend.model.vo.AgentEmailProposalVO;
 import com.czl.teamupbackend.model.vo.MentorSessionItemVO;
 import com.czl.teamupbackend.model.vo.MentorSessionListVO;
 import com.czl.teamupbackend.repository.MentorChatMessageRepository;
@@ -26,6 +27,7 @@ import com.czl.teamupbackend.service.IMentorChatService;
 import com.czl.teamupbackend.service.MemoryLifecycleService;
 import com.czl.teamupbackend.service.ITeamService;
 import com.czl.teamupbackend.service.IDocumentService;
+import com.czl.teamupbackend.service.AgentEmailProposalService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.time.Duration;
@@ -37,6 +39,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -84,14 +87,39 @@ public class MentorChatServiceImpl implements IMentorChatService {
     private static final String SYSTEM_PROMPT = """
         你是 TeamUp 平台的智能导师，负责大学生小组协作的助手。
         你运行在受控的自适应 Plan + ReAct 引擎中：先在内部确定最短可行步骤，再直接回答或调用允许的只读工具。
-        简单解释应在一次回复中结束；只有需要实时小组数据时才调用工具。不要展示思维链、隐藏推理或工具参数，只给用户简洁的结论、依据和下一步建议。
-        当前仅开放只读工具。涉及创建任务、分配成员、修改或删除数据时，只能生成明确草稿并提示用户确认，绝不能声称已写入业务数据。
-        回答必须基于已给出的上下文或工具结果；信息不足时说明缺失内容，不得编造。
-        """;
+        简单解释应在一次回复中结束；只有需要实时小组数据时才调用工具。
+        你的职责是：理解团队协作上下文，帮助成员梳理信息、提出协作建议、识别风险、总结文档和讨论，并生成可供用户确认的草稿。
+
+        当用户提出看似与小组协作无关的问题时,可能来小组上下文,你可以按需查询：
+          - 团队基础情况与成员正式角色；
+          - 任务、进度、负责人和截止时间；
+          - 资料文档、协作文档及其摘要；
+          - 团队工作画像，包括成员工作偏好、协作约定、长期规范、重复协作风险、复盘洞察和待协商议题。
+
+          工具使用规则：
+          1. 回答涉及团队事实的问题前，优先查询必要工具，不要凭空编造。
+          2. 只调用解决当前问题所需的最少工具，避免一次读取全部数据。
+          3. 分工、沟通、协作方式、风险预警问题，优先查询团队工作画像。
+          4. 任务状态、负责人、截止时间问题，优先查询任务信息。
+          5. 文档细节、来源依据或摘要问题，查询文档信息。
+          6. 工作画像中 status=SUGGESTED 的内容只是候选协作记忆，不能表述为已确认事实；只有 CONFIRMED 才可作为团队已确认约定。
+
+          行为边界：
+          - 你可以提出建议、生成草稿、列出待确认事项。
+           - 你不能声称已创建任务、已修改分工、已更新文档或已代表用户作出决定。
+           - 涉及业务状态变化时，先说明建议和影响，等待用户确认。
+            - 需要向指定组员发送邮件时，必须先在本轮调用 queryTeamMembers；recipientUserId 必须逐字使用该工具结果中的 userId，禁止猜测、按昵称/邮箱推导或复用历史ID。
+            - 若 proposeTeamEmail 返回 recipientValid=false，立即调用 queryTeamMembers 重新获取成员，再使用返回的精确 userId 重试一次。
+           - proposeTeamEmail 不会发送邮件；提案生成后立即停止后续业务动作，等待用户在界面中编辑并确认。
+
+          回答要求：
+          - 明确区分已确认事实、建议和待确认事项。
+          - 信息不足时说明原因，并查询相关信息或向用户提问。
+          - 不推断成员人格、能力高低或敏感隐私。
+          - 使用简洁、友好、可执行的中文回答。
+            """;
     private static final int HISTORY_WINDOW_MAX_TOKENS = 4000;
     private static final int TITLE_GENERATION_TIMEOUT_SECONDS = 15;
-    private static final Duration MESSAGE_TOKEN_CACHE_TTL = Duration.ofDays(7);
-    private static final String REDIS_MSG_TOKEN_KEY_PREFIX = "chat:msg:token:";
     private static final String HISTORY_PROMPT_PREFIX = """
         以下是当前会话中按时间顺序截取出的最近历史对话原文，请结合这些上下文继续回答。
         若历史内容与当前提问无关，可按需忽略无关部分，但不要凭空捏造历史事实。
@@ -112,6 +140,7 @@ public class MentorChatServiceImpl implements IMentorChatService {
     private final IDocumentService documentService;
     private final AiAgentRunMapper agentRunMapper;
     private final AiAgentStepMapper agentStepMapper;
+    private final AgentEmailProposalService agentEmailProposalService;
 
     @Value("${spring.ai.openai.summary.model}")
     private String summaryModel;
@@ -144,15 +173,16 @@ public class MentorChatServiceImpl implements IMentorChatService {
         boolean shouldGenerateTitle = isFirstRoundSession(session);
         String traceId = UUID.randomUUID().toString().replace("-", "");
         LocalDateTime now = LocalDateTime.now();
-        int currentPromptTokenCount = estimateUserPromptTokenCount(modelPrompt);
+        // Agent 运行记录可以保留实际请求 Prompt 的 token 估算；消息索引必须只统计 Mongo 正文。
+        int modelPromptTokenCount = estimateTokenCount(modelPrompt);
+        int userMessageTokenCount = estimateTokenCount(storedUserMessage);
 
         AiChatMessageIndex userMsgIndex = buildMsgIndex(session, userId, SENDER_USER, traceId, STATUS_DONE);
         String userMongoId = createMongoMessage(
             userMsgIndex.getId(), session, userId, SENDER_USER, storedUserMessage, traceId, now, null);
         userMsgIndex.setMongoMessageId(userMongoId);
-        userMsgIndex.setTokenCount(currentPromptTokenCount);
+        userMsgIndex.setTokenCount(userMessageTokenCount);
         aiChatMessageIndexService.save(userMsgIndex);
-        cacheMessageTokenCount(userMsgIndex.getId(), userMsgIndex.getTokenCount());
         memoryLifecycleService.onShortTermMessageAdded(userMsgIndex);
 
         AiChatMessageIndex assistantMsgIndex = buildMsgIndex(session, userId, SENDER_ASSISTANT, traceId, STATUS_PENDING);
@@ -165,7 +195,7 @@ public class MentorChatServiceImpl implements IMentorChatService {
         Map<String, Object> toolContext = buildToolContext(userId, request.getTeamId(), session.getTeamId());
         String historyPrompt = buildSlidingWindowHistoryPrompt(session.getId(), userMsgIndex.getId());
         var agentRun = agentRunService.start(
-            session.getId(), session.getTeamId(), userId, traceId, sessionType, storedUserMessage, currentPromptTokenCount);
+            session.getId(), session.getTeamId(), userId, traceId, sessionType, storedUserMessage, modelPromptTokenCount);
         toolContext.put(TOOL_CTX_AGENT_RUN_ID, agentRun.getId());
         agentRunService.registerListener(agentRun.getId(), progress -> sendAgentStatus(emitter, progress));
         final String finalUserPrompt = modelPrompt;
@@ -229,7 +259,7 @@ public class MentorChatServiceImpl implements IMentorChatService {
                 .user(message)
                 .options(requestOptions)
                 .toolNames("queryTeamOverview", "queryTeamMembers", "queryTeamTaskLists", "queryTeamDocuments",
-                    "queryDocumentFullText", "queryTeamWorkProfile")
+                    "queryDocumentFullText", "proposeTeamEmail", "queryTeamWorkProfile")
                 .toolContext(toolContext);
             promptSpec.stream()
                 .chatResponse()
@@ -257,13 +287,14 @@ public class MentorChatServiceImpl implements IMentorChatService {
                 })
                 .doOnComplete(() -> {
                     LocalDateTime endAt = LocalDateTime.now();
-                    int assistantTokenCount = resolveCompletionTokens(usageHolder, assistantFullText.toString());
-                    agentRunService.complete(agentRunId, assistantTokenCount);
+                    int completionTokenCount = resolveCompletionTokens(usageHolder, assistantFullText.toString());
+                    int assistantMessageTokenCount = estimateTokenCount(assistantFullText.toString());
+                    agentRunService.complete(agentRunId, completionTokenCount);
                     agentRunService.unregisterListener(agentRunId);
                     updateMongoMessageContent(assistantMongoId, assistantFullText.toString(), endAt);
-                    markMsgDone(assistantMsgIndex.getId(), assistantTokenCount);
+                    markMsgDone(assistantMsgIndex.getId(), assistantMessageTokenCount);
                     assistantMsgIndex.setStatus(STATUS_DONE);
-                    assistantMsgIndex.setTokenCount(assistantTokenCount);
+                    assistantMsgIndex.setTokenCount(assistantMessageTokenCount);
                     memoryLifecycleService.onShortTermMessageAdded(assistantMsgIndex);
                     refreshSessionStats(session.getId(), endAt);
                     cacheRecentContext(session.getId());
@@ -363,10 +394,16 @@ public class MentorChatServiceImpl implements IMentorChatService {
             .collect(Collectors.toMap(MentorChatMessageDoc::getId, d -> d, (a, b) -> a));
         Map<String, AiAgentRun> runByTraceId = loadAgentRunsByTraceId(indexes);
         Map<Long, List<MentorAgentStepVO>> stepsByRunId = loadAgentStepsByRunId(runByTraceId.values());
+        Map<Long, AgentEmailProposalVO> emailProposalsByRunId = agentEmailProposalService.findByRunIds(userId,
+            runByTraceId.values().stream().map(AiAgentRun::getId).toList());
 
         List<MentorChatMessageItemVO> messages = indexes.stream()
             .map(i -> {
                 MentorChatMessageDoc doc = docMap.get(i.getMongoMessageId());
+                if (doc != null) {
+                    // 历史页面访问时也顺带修复旧版错误 token 统计。
+                    resolveMessageTokenCount(i, doc);
+                }
                 AiAgentRun agentRun = SENDER_ASSISTANT.equals(i.getSenderType())
                     ? runByTraceId.get(i.getTraceId())
                     : null;
@@ -379,6 +416,7 @@ public class MentorChatServiceImpl implements IMentorChatService {
                     .agentRunId(agentRun == null ? null : String.valueOf(agentRun.getId()))
                     .agentStatus(agentRun == null ? null : agentRun.getStatus())
                     .agentSteps(agentRun == null ? List.of() : stepsByRunId.getOrDefault(agentRun.getId(), List.of()))
+                    .emailProposal(agentRun == null ? null : emailProposalsByRunId.get(agentRun.getId()))
                     .build();
             })
             .collect(Collectors.toList());
@@ -740,7 +778,6 @@ public class MentorChatServiceImpl implements IMentorChatService {
         update.setTokenCount(tokenCount);
         update.setErrorMsg("");
         aiChatMessageIndexService.updateById(update);
-        cacheMessageTokenCount(msgId, tokenCount);
     }
 
     private void markMsgFailed(Long msgId, String errMsg) {
@@ -856,98 +893,31 @@ public class MentorChatServiceImpl implements IMentorChatService {
     }
 
     private int resolveMessageTokenCount(AiChatMessageIndex index, MentorChatMessageDoc doc) {
-        Integer cached = readMessageTokenCountFromRedis(index.getId());
-        if (cached != null) {
-            return cached;
+        // 不信任历史 Redis/MySQL 缓存：它们曾保存包含 @ 文档全文的 Prompt token。
+        // 唯一口径是关联 Mongo chat_messages 文档的 content 字段。
+        int contentTokenCount = estimateTokenCount(doc == null ? "" : doc.getContent());
+        if (!Objects.equals(index.getTokenCount(), contentTokenCount)) {
+            AiChatMessageIndex update = new AiChatMessageIndex();
+            update.setId(index.getId());
+            update.setTokenCount(contentTokenCount);
+            aiChatMessageIndexService.updateById(update);
+            // 令短期记忆在下一次访问时用已纠正的索引重新构建，避免延续旧统计。
+            if (index.getSessionId() != null) {
+                stringRedisTemplate.delete("chat:memory:short-term:" + index.getSessionId());
+            }
         }
-        Integer dbValue = index.getTokenCount();
-        if (dbValue != null && dbValue > 0) {
-            cacheMessageTokenCount(index.getId(), dbValue);
-            return dbValue;
-        }
-        int estimated = estimateTokenCount(doc == null ? "" : doc.getContent());
-        AiChatMessageIndex update = new AiChatMessageIndex();
-        update.setId(index.getId());
-        update.setTokenCount(estimated);
-        aiChatMessageIndexService.updateById(update);
-        cacheMessageTokenCount(index.getId(), estimated);
-        index.setTokenCount(estimated);
-        return estimated;
+        index.setTokenCount(contentTokenCount);
+        return contentTokenCount;
     }
 
-    private Integer readMessageTokenCountFromRedis(Long messageId) {
-        if (messageId == null) {
-            return null;
-        }
-        String raw = stringRedisTemplate.opsForValue().get(buildMessageTokenKey(messageId));
-        if (raw == null || raw.isBlank()) {
-            return null;
-        }
-        try {
-            TokenCachePayload payload = objectMapper.readValue(raw, TokenCachePayload.class);
-            return payload.getTokenCount();
-        } catch (Exception e) {
-            log.warn("read message token cache failed, messageId={}", messageId, e);
-            return null;
-        }
-    }
-
-    private void cacheMessageTokenCount(Long messageId, Integer tokenCount) {
-        if (messageId == null || tokenCount == null || tokenCount < 0) {
-            return;
-        }
-        try {
-            String raw = objectMapper.writeValueAsString(new TokenCachePayload(tokenCount, LocalDateTime.now()));
-            stringRedisTemplate.opsForValue().set(buildMessageTokenKey(messageId), raw, MESSAGE_TOKEN_CACHE_TTL);
-        } catch (Exception e) {
-            log.warn("cache message token failed, messageId={}, tokenCount={}", messageId, tokenCount, e);
-        }
-    }
-
-    private String buildMessageTokenKey(Long messageId) {
-        return REDIS_MSG_TOKEN_KEY_PREFIX + messageId;
-    }
-
-    private int estimateUserPromptTokenCount(String content) {
-        if (content == null || content.isBlank()) {
-            return 0;
-        }
-        return Math.max(1, tokenCountEstimator.estimate(content));
-    }
-
+    /**
+     * ai_chat_message_index.token_count 的唯一统计口径：Mongo chat_messages.content 的文本 token。
+     */
     private int estimateTokenCount(String content) {
         if (content == null || content.isBlank()) {
             return 0;
         }
-        int chineseChars = 0;
-        int asciiChars = 0;
-        int otherChars = 0;
-        for (char ch : content.toCharArray()) {
-            if (Character.isWhitespace(ch)) {
-                continue;
-            }
-            if (isChinese(ch)) {
-                chineseChars++;
-            } else if (ch < 128) {
-                asciiChars++;
-            } else {
-                otherChars++;
-            }
-        }
-        int asciiTokens = (int) Math.ceil(asciiChars / 4.0d);
-        int otherTokens = (int) Math.ceil(otherChars / 2.0d);
-        return Math.max(1, chineseChars + asciiTokens + otherTokens);
-    }
-
-    private boolean isChinese(char ch) {
-        Character.UnicodeBlock block = Character.UnicodeBlock.of(ch);
-        return block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS
-            || block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A
-            || block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B
-            || block == Character.UnicodeBlock.CJK_COMPATIBILITY_IDEOGRAPHS
-            || block == Character.UnicodeBlock.CJK_SYMBOLS_AND_PUNCTUATION
-            || block == Character.UnicodeBlock.HALFWIDTH_AND_FULLWIDTH_FORMS
-            || block == Character.UnicodeBlock.GENERAL_PUNCTUATION;
+        return Math.max(1, tokenCountEstimator.estimate(content));
     }
 
     private void captureUsage(UsageUsageHolder usageHolder, ChatResponse chatResponse) {
@@ -987,13 +957,6 @@ public class MentorChatServiceImpl implements IMentorChatService {
         private String role;
         private String content;
         private LocalDateTime createdAt;
-    }
-
-    @Data
-    @AllArgsConstructor
-    private static class TokenCachePayload {
-        private Integer tokenCount;
-        private LocalDateTime updatedAt;
     }
 
     @Data

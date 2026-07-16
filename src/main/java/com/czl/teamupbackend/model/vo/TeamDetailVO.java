@@ -28,6 +28,9 @@ public class TeamDetailVO {
     @Schema(description = "邀请码")
     private String inviteCode;
 
+    @Schema(description = "小组作业最终截止时间")
+    private LocalDateTime totalDeadline;
+
     @Schema(description = "创建时间")
     private LocalDateTime createTime;
 
