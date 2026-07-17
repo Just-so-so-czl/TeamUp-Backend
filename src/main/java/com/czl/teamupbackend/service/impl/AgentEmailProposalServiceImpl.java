@@ -3,6 +3,7 @@ package com.czl.teamupbackend.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.czl.teamupbackend.commen.exception.BizException;
+import com.czl.teamupbackend.event.AgentConfirmationCompletedEvent;
 import com.czl.teamupbackend.mapper.AiActionDraftMapper;
 import com.czl.teamupbackend.mapper.TeamMemberMapper;
 import com.czl.teamupbackend.mapper.UserMapper;
@@ -26,6 +27,7 @@ import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.context.ApplicationEventPublisher;
 
 @Slf4j
 @Service
@@ -41,6 +43,7 @@ public class AgentEmailProposalServiceImpl implements AgentEmailProposalService 
     private final ObjectMapper objectMapper;
     private final TeamMailService teamMailService;
     private final AgentRunService agentRunService;
+    private final ApplicationEventPublisher applicationEventPublisher;
 
     @Override
     public AgentEmailProposalVO create(Long runId, Long operatorUserId, Long teamId, AiEmailProposalToolRequest request) {
@@ -101,6 +104,7 @@ public class AgentEmailProposalServiceImpl implements AgentEmailProposalService 
             draftMapper.updateById(new AiActionDraft().setId(draftId).setStatus(STATUS_EXECUTED).setPayloadJson(writePayload(payload))
                 .setResultSummary(summary).setErrorMsg("").setExecutedAt(LocalDateTime.now()));
             agentRunService.resumeAfterConfirmedWrite(draft.getRunId(), summary);
+            applicationEventPublisher.publishEvent(new AgentConfirmationCompletedEvent(draft.getRunId(), operatorUserId, "sendTeamEmail", summary));
             draft.setStatus(STATUS_EXECUTED); draft.setPayloadJson(writePayload(payload)); draft.setResultSummary(summary);
             log.info("Email proposal executed, draftId={}, runId={}", draftId, draft.getRunId());
             return toVo(draft, payload);

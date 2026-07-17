@@ -16,6 +16,7 @@ import com.czl.teamupbackend.model.vo.MentorChatMessageItemVO;
 import com.czl.teamupbackend.model.vo.MentorAgentStepVO;
 import com.czl.teamupbackend.model.vo.AgentEmailProposalVO;
 import com.czl.teamupbackend.model.vo.AgentTaskListProposalVO;
+import com.czl.teamupbackend.model.vo.AgentCollaborationDocumentPatchProposalVO;
 import com.czl.teamupbackend.model.vo.MentorSessionItemVO;
 import com.czl.teamupbackend.model.vo.MentorSessionListVO;
 import com.czl.teamupbackend.repository.MentorChatMessageRepository;
@@ -25,14 +26,15 @@ import com.czl.teamupbackend.service.IAiChatMessageIndexService;
 import com.czl.teamupbackend.service.IAiChatSessionService;
 import com.czl.teamupbackend.service.AgentRunService;
 import com.czl.teamupbackend.service.IMentorChatService;
+import com.czl.teamupbackend.service.TeamRedisCacheService;
 import com.czl.teamupbackend.service.MemoryLifecycleService;
 import com.czl.teamupbackend.service.ITeamService;
 import com.czl.teamupbackend.service.IDocumentService;
 import com.czl.teamupbackend.service.AgentEmailProposalService;
 import com.czl.teamupbackend.service.AgentTaskListProposalService;
+import com.czl.teamupbackend.service.AgentCollaborationDocumentProposalService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
-import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -58,7 +60,6 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tokenizer.TokenCountEstimator;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -115,6 +116,7 @@ public class MentorChatServiceImpl implements IMentorChatService {
             - 需要向指定组员发送邮件时，必须先在本轮调用 queryTeamMembers；recipientUserId 必须逐字使用该工具结果中的 userId，禁止猜测、按昵称/邮箱推导或复用历史ID。
            - 若 proposeTeamEmail 返回 recipientValid=false，立即调用 queryTeamMembers 重新获取成员，再使用返回的精确 userId 重试一次。
            - 需要创建任务清单时，调用 proposeTaskList，只填写清单标题、描述和子任务描述；不得填写DDL、负责人或人员分配。
+           - proposeTaskList 不会创建任务；任务清单提案生成后立即停止后续业务动作，等待用户在界面中编辑并确认。
            - proposeTeamEmail 不会发送邮件；提案生成后立即停止后续业务动作，等待用户在界面中编辑并确认。
 
           回答要求：
@@ -134,7 +136,9 @@ public class MentorChatServiceImpl implements IMentorChatService {
         1. 只有需要真实小组事实、任务要求、资料依据或工作画像时才调用工具，并且只调用解决当前问题所需的最少工具。
         2. 用户询问当前文档的选中文本时，优先依据本轮引用内容回答；信息不足时明确说明并提出需要补充的上下文。
         3. 工作画像中 status=SUGGESTED 的内容只是候选协作记忆，不能表述为已确认事实；只有 CONFIRMED 才可作为团队已确认约定。
-        4. 你当前没有修改协作文档、创建任务清单或发送邮件的能力。可以提供可直接采纳的改写稿、章节草案、待办建议或审查清单，但不得声称已经写入任何业务数据或文档。
+        4. 当用户明确要求新增、替换或删除当前文档的顶层标题/段落时，先调用 queryCurrentCollaborationDocument 获取实时快照，再调用 proposeCollaborationDocumentPatch 生成待审核草案。只能使用工具返回的 snapshotId、targetBlockId 和 expectedTextHash；草案不会立即写入文档。
+        5. 如果 proposeCollaborationDocumentPatch 返回 proposalCreated=false 且 retryable=true，必须依据 retryInstruction 修正 Patch，并在同一轮重新调用该工具；不得把校验错误直接转述给用户。
+        6. 你不能创建任务清单或发送邮件。文档草案应用前不得声称已修改文档；用户确认后才由系统执行。
 
         回答要求：
         - 以当前文档为中心，给出清晰、简洁、可直接编辑使用的中文内容。
@@ -152,7 +156,9 @@ public class MentorChatServiceImpl implements IMentorChatService {
     );
     private static final AgentProfile COLLAB_DOCUMENT_PROFILE = new AgentProfile(
         DOCUMENT_ASSISTANT_SYSTEM_PROMPT,
-        SHARED_READ_TOOL_NAMES
+        List.of("queryTeamOverview", "queryTeamMembers", "queryTeamTaskLists", "queryTeamDocuments",
+            "queryDocumentFullText", "queryTeamWorkProfile", "queryCurrentCollaborationDocument",
+            "proposeCollaborationDocumentPatch")
     );
     private static final int HISTORY_WINDOW_MAX_TOKENS = 4000;
     private static final int TITLE_GENERATION_TIMEOUT_SECONDS = 15;
@@ -161,12 +167,18 @@ public class MentorChatServiceImpl implements IMentorChatService {
         若历史内容与当前提问无关，可按需忽略无关部分，但不要凭空捏造历史事实。
 
         """;
+    private static final String CONFIRMATION_OBSERVATION_PREFIX = """
+        系统观察到：上一项受控操作已由用户确认并执行成功。
+        执行结果：%s
+
+        请基于原始用户目标继续完成尚未完成的后续事项。若仍需产生新的写操作，只生成下一份待确认草案，并在草案生成后停止；不要重复已经成功执行的操作。
+        """;
 
     private final ChatClient.Builder chatClientBuilder;
     private final IAiChatSessionService aiChatSessionService;
     private final IAiChatMessageIndexService aiChatMessageIndexService;
     private final MentorChatMessageRepository mentorChatMessageRepository;
-    private final StringRedisTemplate stringRedisTemplate;
+    private final TeamRedisCacheService teamRedisCacheService;
     private final ObjectMapper objectMapper;
     private final Executor mvcAsyncTaskExecutor;
     private final TokenCountEstimator tokenCountEstimator;
@@ -178,6 +190,7 @@ public class MentorChatServiceImpl implements IMentorChatService {
     private final AiAgentStepMapper agentStepMapper;
     private final AgentEmailProposalService agentEmailProposalService;
     private final AgentTaskListProposalService agentTaskListProposalService;
+    private final AgentCollaborationDocumentProposalService agentCollaborationDocumentProposalService;
 
     @Value("${spring.ai.openai.summary.model}")
     private String summaryModel;
@@ -245,6 +258,122 @@ public class MentorChatServiceImpl implements IMentorChatService {
         return emitter;
     }
 
+    @Override
+    public void resumeAfterConfirmation(Long runId, Long userId, String toolName, String resultSummary) {
+        if (runId == null || userId == null) {
+            return;
+        }
+        AiAgentRun run = agentRunMapper.selectById(runId);
+        if (run == null || !userId.equals(run.getUserId())) {
+            log.warn("Skip Agent resume because run is unavailable, runId={}, userId={}", runId, userId);
+            return;
+        }
+        AiChatSession session = aiChatSessionService.getById(run.getSessionId());
+        if (session == null || !userId.equals(session.getCreatorUserId())) {
+            log.warn("Skip Agent resume because session is unavailable, runId={}, sessionId={}", runId, run.getSessionId());
+            return;
+        }
+        teamService.validateTeamAccessible(userId, run.getTeamId());
+
+        // A confirmation continues the original turn, so keep its answer and workflow in one message.
+        String traceId = run.getTraceId();
+        AiChatMessageIndex assistantMsgIndex = findLatestAssistantMessage(session.getId(), traceId);
+        if (assistantMsgIndex == null || assistantMsgIndex.getMongoMessageId() == null) {
+            log.warn("Skip Agent resume because original assistant message is unavailable, runId={}, traceId={}", runId, traceId);
+            return;
+        }
+
+        AgentProfile profile = resolveAgentProfile(session);
+        Map<String, Object> toolContext = buildToolContext(userId, run.getTeamId(), session);
+        toolContext.put(TOOL_CTX_AGENT_RUN_ID, runId);
+        String safeResultSummary = resultSummary == null ? "已按用户确认执行" : resultSummary;
+        if (safeResultSummary.length() > 500) {
+            safeResultSummary = safeResultSummary.substring(0, 500);
+        }
+        String observationPrompt = CONFIRMATION_OBSERVATION_PREFIX.formatted(safeResultSummary);
+        String historyPrompt = buildSlidingWindowHistoryPrompt(session.getId(), null);
+        String systemPrompt = buildSystemPrompt(profile, historyPrompt) + "\n\n" + observationPrompt;
+        mvcAsyncTaskExecutor.execute(() -> doResumeStream(
+            runId, session, traceId, assistantMsgIndex, assistantMsgIndex.getMongoMessageId(), profile, toolContext, systemPrompt, observationPrompt));
+    }
+
+    private void doResumeStream(
+        Long runId,
+        AiChatSession session,
+        String traceId,
+        AiChatMessageIndex assistantMsgIndex,
+        String assistantMongoId,
+        AgentProfile profile,
+        Map<String, Object> toolContext,
+        String systemPrompt,
+        String observationPrompt
+    ) {
+        StringBuilder assistantFullText = new StringBuilder(loadMongoMessageContent(assistantMongoId));
+        UsageUsageHolder usageHolder = new UsageUsageHolder();
+        try {
+            agentRunService.markPlanning(runId);
+            ChatClient.ChatClientRequestSpec promptSpec = chatClientBuilder.build().prompt()
+                .system(systemPrompt)
+                .user(observationPrompt)
+                .options(OpenAiChatOptions.builder().streamUsage(true).build())
+                .toolNames(profile.toolNames().toArray(String[]::new))
+                .toolContext(toolContext);
+            promptSpec.stream().chatResponse()
+                .takeWhile(chatResponse -> !agentRunService.isWaitingConfirmation(runId))
+                .doOnNext(chatResponse -> {
+                    captureUsage(usageHolder, chatResponse);
+                    String chunk = extractChunkContent(chatResponse);
+                    if (chunk == null || chunk.isEmpty()) {
+                        return;
+                    }
+                    if (assistantFullText.isEmpty()) {
+                        agentRunService.markAnswering(runId);
+                    }
+                    assistantFullText.append(chunk);
+                })
+                .doOnComplete(() -> finishResumedRun(
+                    runId, session, assistantMsgIndex, assistantMongoId, traceId, assistantFullText, usageHolder))
+                .doOnError(ex -> failResumedRun(runId, session, assistantMsgIndex, ex))
+                .blockLast();
+        } catch (Exception e) {
+            failResumedRun(runId, session, assistantMsgIndex, e);
+        }
+    }
+
+    private void finishResumedRun(
+        Long runId,
+        AiChatSession session,
+        AiChatMessageIndex assistantMsgIndex,
+        String assistantMongoId,
+        String traceId,
+        StringBuilder assistantFullText,
+        UsageUsageHolder usageHolder
+    ) {
+        LocalDateTime endAt = LocalDateTime.now();
+        String assistantText = assistantFullText.toString();
+        int tokenCount = estimateTokenCount(assistantText);
+        updateMongoMessageContent(assistantMongoId, assistantText, endAt);
+        markMsgDone(assistantMsgIndex.getId(), tokenCount);
+        assistantMsgIndex.setStatus(STATUS_DONE);
+        assistantMsgIndex.setTokenCount(tokenCount);
+        memoryLifecycleService.onShortTermMessageAdded(assistantMsgIndex);
+        refreshSessionStats(session.getId(), endAt);
+        cacheRecentContext(session.getId());
+        AiAgentRun latestRun = agentRunMapper.selectById(runId);
+        if (latestRun == null || !"WAITING_CONFIRMATION".equals(latestRun.getStatus())) {
+            agentRunService.complete(runId, resolveCompletionTokens(usageHolder, assistantText));
+        }
+        log.info("Agent resumed after confirmed action, runId={}, traceId={}, waitingConfirmation={}",
+            runId, traceId, latestRun != null && "WAITING_CONFIRMATION".equals(latestRun.getStatus()));
+    }
+
+    private void failResumedRun(Long runId, AiChatSession session, AiChatMessageIndex assistantMsgIndex, Throwable error) {
+        markMsgFailed(assistantMsgIndex.getId(), error.getMessage());
+        refreshSessionStats(session.getId(), LocalDateTime.now());
+        agentRunService.fail(runId, error.getMessage());
+        log.error("Agent resume failed after confirmed action, runId={}", runId, error);
+    }
+
     private String appendSelectedTextQuote(String message, MentorChatRequest request, String sessionType) {
         String selectedText = request.getSelectedText();
         if (selectedText == null || selectedText.isBlank()) {
@@ -300,6 +429,7 @@ public class MentorChatServiceImpl implements IMentorChatService {
                 .toolContext(toolContext);
             promptSpec.stream()
                 .chatResponse()
+                .takeWhile(chatResponse -> !agentRunService.isWaitingConfirmation(agentRunId))
                 .doOnNext(chatResponse -> {
                     captureUsage(usageHolder, chatResponse);
                     String chunk = extractChunkContent(chatResponse);
@@ -345,6 +475,7 @@ public class MentorChatServiceImpl implements IMentorChatService {
                     );
                 })
                 .doOnError(ex -> {
+                    teamRedisCacheService.evictChatHistory(session.getId());
                     agentRunService.fail(agentRunId, ex.getMessage());
                     agentRunService.unregisterListener(agentRunId);
                     markMsgFailed(assistantMsgIndex.getId(), ex.getMessage());
@@ -354,6 +485,7 @@ public class MentorChatServiceImpl implements IMentorChatService {
                 })
                 .blockLast();
         } catch (Exception e) {
+            teamRedisCacheService.evictChatHistory(session.getId());
             agentRunService.fail(agentRunId, e.getMessage());
             agentRunService.unregisterListener(agentRunId);
             markMsgFailed(assistantMsgIndex.getId(), e.getMessage());
@@ -435,8 +567,20 @@ public class MentorChatServiceImpl implements IMentorChatService {
             runByTraceId.values().stream().map(AiAgentRun::getId).toList());
         Map<Long, AgentTaskListProposalVO> taskListProposalsByRunId = agentTaskListProposalService.findByRunIds(userId,
             runByTraceId.values().stream().map(AiAgentRun::getId).toList());
+        Map<Long, AgentCollaborationDocumentPatchProposalVO> collaborationDocumentProposalsByRunId =
+            agentCollaborationDocumentProposalService.findByRunIds(userId,
+                runByTraceId.values().stream().map(AiAgentRun::getId).toList());
+        Map<String, Long> latestAssistantMessageIdByTraceId = indexes.stream()
+            .filter(index -> SENDER_ASSISTANT.equals(index.getSenderType()))
+            .filter(index -> index.getTraceId() != null && !index.getTraceId().isBlank())
+            .collect(Collectors.toMap(AiChatMessageIndex::getTraceId, AiChatMessageIndex::getId, (older, newer) -> newer));
 
         List<MentorChatMessageItemVO> messages = indexes.stream()
+            // Older runs may have a continuation message. Return only the final assistant
+            // message for that trace so one user turn is rendered as one assistant bubble.
+            .filter(index -> !SENDER_ASSISTANT.equals(index.getSenderType())
+                || index.getTraceId() == null || index.getTraceId().isBlank()
+                || index.getId().equals(latestAssistantMessageIdByTraceId.get(index.getTraceId())))
             .map(i -> {
                 MentorChatMessageDoc doc = docMap.get(i.getMongoMessageId());
                 if (doc != null) {
@@ -446,17 +590,20 @@ public class MentorChatServiceImpl implements IMentorChatService {
                 AiAgentRun agentRun = SENDER_ASSISTANT.equals(i.getSenderType())
                     ? runByTraceId.get(i.getTraceId())
                     : null;
+                boolean isLatestRunMessage = agentRun != null && i.getId() != null
+                    && i.getId().equals(latestAssistantMessageIdByTraceId.get(i.getTraceId()));
                 return MentorChatMessageItemVO.builder()
                     .messageId(String.valueOf(i.getId()))
                     .senderType(i.getSenderType())
                     .messageType(i.getMessageType())
                     .content(doc == null ? "" : doc.getContent())
                     .createdAt(i.getCreatedAt())
-                    .agentRunId(agentRun == null ? null : String.valueOf(agentRun.getId()))
-                    .agentStatus(agentRun == null ? null : agentRun.getStatus())
-                    .agentSteps(agentRun == null ? List.of() : stepsByRunId.getOrDefault(agentRun.getId(), List.of()))
-                    .emailProposal(agentRun == null ? null : emailProposalsByRunId.get(agentRun.getId()))
-                    .taskListProposal(agentRun == null ? null : taskListProposalsByRunId.get(agentRun.getId()))
+                    .agentRunId(isLatestRunMessage ? String.valueOf(agentRun.getId()) : null)
+                    .agentStatus(isLatestRunMessage ? agentRun.getStatus() : null)
+                    .agentSteps(isLatestRunMessage ? stepsByRunId.getOrDefault(agentRun.getId(), List.of()) : List.of())
+                    .emailProposal(isLatestRunMessage ? emailProposalsByRunId.get(agentRun.getId()) : null)
+                    .taskListProposal(isLatestRunMessage ? taskListProposalsByRunId.get(agentRun.getId()) : null)
+                    .collaborationDocumentProposal(isLatestRunMessage ? collaborationDocumentProposalsByRunId.get(agentRun.getId()) : null)
                     .build();
             })
             .collect(Collectors.toList());
@@ -483,6 +630,30 @@ public class MentorChatServiceImpl implements IMentorChatService {
                 .in(AiAgentRun::getTraceId, traceIds))
             .stream()
             .collect(Collectors.toMap(AiAgentRun::getTraceId, run -> run, (newer, ignored) -> newer));
+    }
+
+    private AiChatMessageIndex findLatestAssistantMessage(Long sessionId, String traceId) {
+        if (sessionId == null || traceId == null || traceId.isBlank()) {
+            return null;
+        }
+        return aiChatMessageIndexService.list(new LambdaQueryWrapper<AiChatMessageIndex>()
+                .eq(AiChatMessageIndex::getSessionId, sessionId)
+                .eq(AiChatMessageIndex::getTraceId, traceId)
+                .eq(AiChatMessageIndex::getSenderType, SENDER_ASSISTANT)
+                .orderByDesc(AiChatMessageIndex::getCreatedAt)
+                .last("LIMIT 1"))
+            .stream()
+            .findFirst()
+            .orElse(null);
+    }
+
+    private String loadMongoMessageContent(String mongoMessageId) {
+        if (mongoMessageId == null || mongoMessageId.isBlank()) {
+            return "";
+        }
+        return mentorChatMessageRepository.findById(mongoMessageId)
+            .map(MentorChatMessageDoc::getContent)
+            .orElse("");
     }
 
     private Map<Long, List<MentorAgentStepVO>> loadAgentStepsByRunId(java.util.Collection<AiAgentRun> runs) {
@@ -851,23 +1022,13 @@ public class MentorChatServiceImpl implements IMentorChatService {
     }
 
     private void cacheRecentContext(Long sessionId) {
-        List<MentorChatMessageDoc> docs = mentorChatMessageRepository.findTop20BySessionIdOrderByCreatedAtDesc(sessionId);
-        if (docs == null || docs.isEmpty()) {
+        String historyPrompt = buildSlidingWindowHistoryPromptFromStore(sessionId, null);
+        if (historyPrompt == null || historyPrompt.isBlank()) {
+            teamRedisCacheService.evictChatHistory(sessionId);
             return;
         }
-        List<MentorChatMessageDoc> sorted = new ArrayList<>(docs);
-        sorted.sort(Comparator.comparing(MentorChatMessageDoc::getCreatedAt));
-        List<ContextMessage> contextMessages = new ArrayList<>(sorted.size());
-        for (MentorChatMessageDoc doc : sorted) {
-            String role = SENDER_ASSISTANT.equals(doc.getSenderType()) ? "assistant" : "user";
-            contextMessages.add(new ContextMessage(role, doc.getContent() == null ? "" : doc.getContent(), doc.getCreatedAt()));
-        }
-        try {
-            String json = objectMapper.writeValueAsString(contextMessages);
-            stringRedisTemplate.opsForValue().set("chat:ctx:" + sessionId, json, Duration.ofHours(2));
-        } catch (Exception e) {
-            log.warn("cache chat context as json failed, sessionId={}", sessionId, e);
-        }
+        teamRedisCacheService.putRaw(teamRedisCacheService.chatHistoryKey(sessionId), historyPrompt,
+            TeamRedisCacheService.CHAT_HISTORY_TTL);
     }
 
     private String buildSystemPrompt(AgentProfile profile, String historyPrompt) {
@@ -878,6 +1039,16 @@ public class MentorChatServiceImpl implements IMentorChatService {
     }
 
     private String buildSlidingWindowHistoryPrompt(Long sessionId, Long excludedMessageId) {
+        if (excludedMessageId != null) {
+            String cached = teamRedisCacheService.getRaw(teamRedisCacheService.chatHistoryKey(sessionId));
+            if (cached != null) {
+                return cached;
+            }
+        }
+        return buildSlidingWindowHistoryPromptFromStore(sessionId, excludedMessageId);
+    }
+
+    private String buildSlidingWindowHistoryPromptFromStore(Long sessionId, Long excludedMessageId) {
         List<AiChatMessageIndex> indexes = aiChatMessageIndexService.list(new LambdaQueryWrapper<AiChatMessageIndex>()
             .eq(AiChatMessageIndex::getSessionId, sessionId)
             .eq(AiChatMessageIndex::getDeleted, 0)
@@ -954,7 +1125,7 @@ public class MentorChatServiceImpl implements IMentorChatService {
             aiChatMessageIndexService.updateById(update);
             // 令短期记忆在下一次访问时用已纠正的索引重新构建，避免延续旧统计。
             if (index.getSessionId() != null) {
-                stringRedisTemplate.delete("chat:memory:short-term:" + index.getSessionId());
+                teamRedisCacheService.evictShortTermChatMemory(index.getSessionId());
             }
         }
         index.setTokenCount(contentTokenCount);
@@ -1000,14 +1171,6 @@ public class MentorChatServiceImpl implements IMentorChatService {
             return usageHolder.getCompletionTokens();
         }
         return estimateTokenCount(assistantText);
-    }
-
-    @Data
-    @AllArgsConstructor
-    private static class ContextMessage {
-        private String role;
-        private String content;
-        private LocalDateTime createdAt;
     }
 
     @Data

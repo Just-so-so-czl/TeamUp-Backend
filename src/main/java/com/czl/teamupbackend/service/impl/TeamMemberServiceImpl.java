@@ -19,6 +19,7 @@ import com.czl.teamupbackend.model.vo.TeamMemberManageItemVO;
 import com.czl.teamupbackend.model.vo.TeamMembersManageVO;
 import com.czl.teamupbackend.model.vo.TeamPendingJoinRequestVO;
 import com.czl.teamupbackend.service.ITeamMemberService;
+import com.czl.teamupbackend.service.TeamRedisCacheService;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -45,6 +46,7 @@ public class TeamMemberServiceImpl extends ServiceImpl<TeamMemberMapper, TeamMem
     private final TeamMapper teamMapper;
     private final UserMapper userMapper;
     private final TeamJoinRequestMapper teamJoinRequestMapper;
+    private final TeamRedisCacheService teamRedisCacheService;
 
     @Override
     public MyTeamListVO listMyTeams(Long userId) {
@@ -125,6 +127,11 @@ public class TeamMemberServiceImpl extends ServiceImpl<TeamMemberMapper, TeamMem
     @Override
     public TeamMembersManageVO getTeamMembersManage(Long currentUserId, Long teamId) {
         Team team = validateTeamAndMembership(currentUserId, teamId);
+        String cacheKey = teamRedisCacheService.teamMembersKey(teamId, currentUserId);
+        TeamMembersManageVO cached = teamRedisCacheService.get(cacheKey, TeamMembersManageVO.class);
+        if (cached != null) {
+            return cached;
+        }
 
         List<TeamMember> members = this.list(new LambdaQueryWrapper<TeamMember>()
             .eq(TeamMember::getTeamId, teamId)
@@ -199,13 +206,15 @@ public class TeamMemberServiceImpl extends ServiceImpl<TeamMemberMapper, TeamMem
                 .build();
         }).collect(Collectors.toList());
 
-        return TeamMembersManageVO.builder()
+        TeamMembersManageVO result = TeamMembersManageVO.builder()
             .currentUserCaptain(team.getOwnerId().equals(currentUserId))
             .currentUserRoleName(selfRole.getRoleName())
             .currentUserRoleDesc(selfRoleDescription)
             .pendingRequests(pendingVOList)
             .members(memberVOList)
             .build();
+        teamRedisCacheService.put(cacheKey, result, TeamRedisCacheService.TEAM_MEMBERS_TTL);
+        return result;
     }
 
     @Override
@@ -233,6 +242,8 @@ public class TeamMemberServiceImpl extends ServiceImpl<TeamMemberMapper, TeamMem
 
         targetMember.setRole(targetRole.getCode());
         this.updateById(targetMember);
+        teamRedisCacheService.evictTeamMembersAfterCommit(teamId);
+        teamRedisCacheService.evictTaskBoardAfterCommit(teamId);
         log.info("Member role updated, teamId={}, operatorUserId={}, memberUserId={}, roleCode={}",
             teamId, currentUserId, memberUserId, targetRole.getCode());
     }
@@ -257,6 +268,8 @@ public class TeamMemberServiceImpl extends ServiceImpl<TeamMemberMapper, TeamMem
         if (!removed) {
             throw new BizException(404, "成员不存在");
         }
+        teamRedisCacheService.evictTeamMembersAfterCommit(teamId);
+        teamRedisCacheService.evictTaskBoardAfterCommit(teamId);
         log.info("Member removed, teamId={}, operatorUserId={}, memberUserId={}",
             teamId, currentUserId, memberUserId);
     }
@@ -278,6 +291,7 @@ public class TeamMemberServiceImpl extends ServiceImpl<TeamMemberMapper, TeamMem
 
         selfMember.setRoleDescription(normalizeRoleDescription(roleDesc));
         this.updateById(selfMember);
+        teamRedisCacheService.evictTeamMembersAfterCommit(teamId);
         log.info("Self role desc updated, teamId={}, userId={}", team.getId(), currentUserId);
     }
 

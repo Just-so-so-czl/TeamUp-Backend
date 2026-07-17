@@ -5,13 +5,16 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.czl.teamupbackend.commen.exception.BizException;
 import com.czl.teamupbackend.commen.jwt.JwtTokenUtil;
 import com.czl.teamupbackend.mapper.UserMapper;
+import com.czl.teamupbackend.mapper.TeamMemberMapper;
 import com.czl.teamupbackend.model.dto.UserLoginRequest;
 import com.czl.teamupbackend.model.dto.UserProfileUpdateRequest;
 import com.czl.teamupbackend.model.dto.UserRegisterRequest;
 import com.czl.teamupbackend.model.entity.User;
+import com.czl.teamupbackend.model.entity.TeamMember;
 import com.czl.teamupbackend.model.vo.LoginResponseVO;
 import com.czl.teamupbackend.model.vo.UserSimpleVO;
 import com.czl.teamupbackend.service.IUserService;
+import com.czl.teamupbackend.service.TeamRedisCacheService;
 import java.time.LocalDateTime;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
@@ -28,6 +31,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
 
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenUtil jwtTokenUtil;
+    private final TeamMemberMapper teamMemberMapper;
+    private final TeamRedisCacheService teamRedisCacheService;
 
     @Override
     public void register(UserRegisterRequest request) {
@@ -128,6 +133,13 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         user.setAvatar(avatar);
         user.setUpdateTime(LocalDateTime.now());
         updateById(user);
+        teamMemberMapper.selectList(new LambdaQueryWrapper<TeamMember>()
+                .eq(TeamMember::getUserId, userId))
+            .stream()
+            .map(TeamMember::getTeamId)
+            .filter(java.util.Objects::nonNull)
+            .distinct()
+            .forEach(teamRedisCacheService::evictTeamMembersAfterCommit);
         log.info("User profile updated, userId={}", userId);
         return UserSimpleVO.builder()
             .id(user.getId())

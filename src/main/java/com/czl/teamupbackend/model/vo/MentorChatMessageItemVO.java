@@ -28,4 +28,6 @@ public class MentorChatMessageItemVO {
     private AgentEmailProposalVO emailProposal;
 
     private AgentTaskListProposalVO taskListProposal;
+
+    private AgentCollaborationDocumentPatchProposalVO collaborationDocumentProposal;
 }

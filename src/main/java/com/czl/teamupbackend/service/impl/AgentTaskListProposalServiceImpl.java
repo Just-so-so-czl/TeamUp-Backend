@@ -3,6 +3,7 @@ package com.czl.teamupbackend.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.czl.teamupbackend.commen.exception.BizException;
+import com.czl.teamupbackend.event.AgentConfirmationCompletedEvent;
 import com.czl.teamupbackend.mapper.AiActionDraftMapper;
 import com.czl.teamupbackend.mapper.TeamMapper;
 import com.czl.teamupbackend.model.dto.AiTaskListProposalToolRequest;
@@ -25,6 +26,7 @@ import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.context.ApplicationEventPublisher;
 
 @Service
 @RequiredArgsConstructor
@@ -38,6 +40,7 @@ public class AgentTaskListProposalServiceImpl implements AgentTaskListProposalSe
     private final ITaskListService taskListService;
     private final ITaskService taskService;
     private final AgentRunService agentRunService;
+    private final ApplicationEventPublisher applicationEventPublisher;
 
     @Override
     public AgentTaskListProposalVO create(Long runId, Long userId, Long teamId, AiTaskListProposalToolRequest request) {
@@ -71,7 +74,9 @@ public class AgentTaskListProposalServiceImpl implements AgentTaskListProposalSe
         for (String task : (List<String>) payload.get("taskDescriptions")) taskService.createTask(userId, latest.get(0).getId(), task, due);
         String summary = "已创建任务清单“" + payload.get("title") + "”及" + ((List<?>) payload.get("taskDescriptions")).size() + "个子任务";
         draftMapper.updateById(new AiActionDraft().setId(draftId).setStatus(EXECUTED).setPayloadJson(write(payload)).setResultSummary(summary).setExecutedAt(LocalDateTime.now()));
-        agentRunService.resumeAfterConfirmedWrite(draft.getRunId(), "createTaskList", summary); draft.setStatus(EXECUTED); draft.setPayloadJson(write(payload)); draft.setResultSummary(summary); return toVo(draft, payload);
+        agentRunService.resumeAfterConfirmedWrite(draft.getRunId(), "createTaskList", summary);
+        applicationEventPublisher.publishEvent(new AgentConfirmationCompletedEvent(draft.getRunId(), userId, "createTaskList", summary));
+        draft.setStatus(EXECUTED); draft.setPayloadJson(write(payload)); draft.setResultSummary(summary); return toVo(draft, payload);
     }
 
     @Override public Map<Long, AgentTaskListProposalVO> findByRunIds(Long userId, Collection<Long> runIds) { if (runIds == null || runIds.isEmpty()) return Map.of(); return draftMapper.selectList(new LambdaQueryWrapper<AiActionDraft>().eq(AiActionDraft::getCreatorUserId, userId).eq(AiActionDraft::getActionType, ACTION_TYPE).in(AiActionDraft::getRunId, runIds)).stream().collect(Collectors.toMap(AiActionDraft::getRunId, draft -> toVo(draft, read(draft)), (n, o) -> n)); }

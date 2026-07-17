@@ -18,6 +18,7 @@ import com.czl.teamupbackend.model.vo.WebSocketNotifyVO;
 import com.czl.teamupbackend.realtime.OnlineUserSessionManager;
 import com.czl.teamupbackend.service.ITeamJoinRequestService;
 import com.czl.teamupbackend.service.ITeamMessageService;
+import com.czl.teamupbackend.service.TeamRedisCacheService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import lombok.RequiredArgsConstructor;
@@ -46,6 +47,7 @@ public class TeamJoinRequestServiceImpl extends ServiceImpl<TeamJoinRequestMappe
     private final ITeamMessageService teamMessageService;
     private final OnlineUserSessionManager onlineUserSessionManager;
     private final ObjectMapper objectMapper;
+    private final TeamRedisCacheService teamRedisCacheService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -93,6 +95,7 @@ public class TeamJoinRequestServiceImpl extends ServiceImpl<TeamJoinRequestMappe
             .setDescription(description)
             .setStatus(STATUS_PENDING);
         this.save(joinRequest);
+        teamRedisCacheService.evictTeamMembersAfterCommit(team.getId());
 
         TeamMessage message = new TeamMessage()
             .setTitle("新的入组申请待处理")
@@ -147,6 +150,8 @@ public class TeamJoinRequestServiceImpl extends ServiceImpl<TeamJoinRequestMappe
 
         joinRequest.setStatus(STATUS_APPROVED);
         this.updateById(joinRequest);
+        teamRedisCacheService.evictTeamMembersAfterCommit(joinRequest.getTeamId());
+        teamRedisCacheService.evictTaskBoardAfterCommit(joinRequest.getTeamId());
         log.info("Join request approved, requestId={}, operatorUserId={}", requestId, operatorUserId);
     }
 
@@ -156,6 +161,7 @@ public class TeamJoinRequestServiceImpl extends ServiceImpl<TeamJoinRequestMappe
         TeamJoinRequest joinRequest = validateAndGetPendingRequest(operatorUserId, requestId);
         joinRequest.setStatus(STATUS_REJECTED);
         this.updateById(joinRequest);
+        teamRedisCacheService.evictTeamMembersAfterCommit(joinRequest.getTeamId());
         log.info("Join request rejected, requestId={}, operatorUserId={}", requestId, operatorUserId);
     }
 

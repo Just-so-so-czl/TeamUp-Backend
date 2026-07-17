@@ -4,6 +4,7 @@ import com.czl.teamupbackend.event.TeamWorkProfileExtractionRequestedEvent;
 import com.czl.teamupbackend.model.mongo.TeamWorkProfileDoc;
 import com.czl.teamupbackend.repository.TeamWorkProfileRepository;
 import com.czl.teamupbackend.service.TeamWorkProfileService;
+import com.czl.teamupbackend.service.TeamRedisCacheService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -78,6 +79,7 @@ public class TeamWorkProfileServiceImpl implements TeamWorkProfileService {
     private final ApplicationEventPublisher applicationEventPublisher;
     private final ChatClient.Builder chatClientBuilder;
     private final ObjectMapper objectMapper;
+    private final TeamRedisCacheService teamRedisCacheService;
 
     @Value("${spring.ai.openai.summary.model}")
     private String summaryModel;
@@ -123,9 +125,17 @@ public class TeamWorkProfileServiceImpl implements TeamWorkProfileService {
 
     @Override
     public Map<String, Object> getAgentView(Long teamId) {
+        Map<String, Object> cached = teamRedisCacheService.get(
+            teamRedisCacheService.teamWorkProfileKey(teamId), Map.class);
+        if (cached != null) {
+            return cached;
+        }
         Optional<TeamWorkProfileDoc> optionalProfile = teamWorkProfileRepository.findByTeamId(teamId);
         if (optionalProfile.isEmpty()) {
-            return emptyAgentView(teamId);
+            Map<String, Object> result = emptyAgentView(teamId);
+            teamRedisCacheService.put(teamRedisCacheService.teamWorkProfileKey(teamId), result,
+                TeamRedisCacheService.TEAM_WORK_PROFILE_TTL);
+            return result;
         }
         TeamWorkProfileDoc profile = optionalProfile.get();
         Map<String, Object> result = new HashMap<>();
@@ -138,6 +148,8 @@ public class TeamWorkProfileServiceImpl implements TeamWorkProfileService {
         result.put("retrospectiveInsights", factsToView(profile.getRetrospectiveInsights()));
         result.put("openCoordinationTopics", factsToView(profile.getOpenCoordinationTopics()));
         result.put("extraMemory", factsToView(profile.getExtraMemory()));
+        teamRedisCacheService.put(teamRedisCacheService.teamWorkProfileKey(teamId), result,
+            TeamRedisCacheService.TEAM_WORK_PROFILE_TTL);
         return result;
     }
 
@@ -178,6 +190,7 @@ public class TeamWorkProfileServiceImpl implements TeamWorkProfileService {
             merge(profile, extraction, event);
             try {
                 teamWorkProfileRepository.save(profile);
+                teamRedisCacheService.evictTeamWorkProfileAfterCommit(event.teamId());
                 log.info("Team work profile extracted, teamId={}, sourceType={}, sourceId={}",
                     event.teamId(), event.sourceType(), event.sourceId());
                 return;

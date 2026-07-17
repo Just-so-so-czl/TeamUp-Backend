@@ -13,6 +13,7 @@ import com.czl.teamupbackend.model.entity.Team;
 import com.czl.teamupbackend.model.entity.TeamMember;
 import com.czl.teamupbackend.model.enums.TeamMemberRoleEnum;
 import com.czl.teamupbackend.service.ITaskService;
+import com.czl.teamupbackend.service.TeamRedisCacheService;
 import java.time.LocalDateTime;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -33,6 +34,7 @@ public class TaskServiceImpl extends ServiceImpl<TaskMapper, Task> implements IT
     private final TaskListMapper taskListMapper;
     private final TeamMapper teamMapper;
     private final TeamMemberMapper teamMemberMapper;
+    private final TeamRedisCacheService teamRedisCacheService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -90,6 +92,7 @@ public class TaskServiceImpl extends ServiceImpl<TaskMapper, Task> implements IT
         task.setCompletionNote(null);
         task.setDeadline(deadline);
         this.save(task);
+        teamRedisCacheService.evictTaskBoardAfterCommit(team.getId());
         log.info("Task created, teamId={}, taskListId={}, operatorUserId={}, taskId={}",
             team.getId(), taskListId, currentUserId, task.getId());
     }
@@ -130,6 +133,7 @@ public class TaskServiceImpl extends ServiceImpl<TaskMapper, Task> implements IT
         task.setStatus(TASK_STATUS_DONE);
         task.setCompletionNote(validNote.isEmpty() ? null : validNote);
         this.updateById(task);
+        teamRedisCacheService.evictTaskBoardAfterCommit(team.getId());
         log.info("Task completed, teamId={}, taskId={}, userId={}", team.getId(), taskId, currentUserId);
     }
 }

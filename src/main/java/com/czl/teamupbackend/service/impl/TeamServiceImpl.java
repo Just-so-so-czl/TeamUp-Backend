@@ -20,6 +20,7 @@ import com.czl.teamupbackend.model.enums.TeamMemberRoleEnum;
 import com.czl.teamupbackend.model.vo.TeamCreateResponseVO;
 import com.czl.teamupbackend.model.vo.TeamDetailVO;
 import com.czl.teamupbackend.service.ITeamService;
+import com.czl.teamupbackend.service.TeamRedisCacheService;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
@@ -44,6 +45,7 @@ public class TeamServiceImpl extends ServiceImpl<TeamMapper, Team> implements IT
     private final TeamMemberMapper teamMemberMapper;
     private final TaskListMapper taskListMapper;
     private final TaskMapper taskMapper;
+    private final TeamRedisCacheService teamRedisCacheService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -85,7 +87,8 @@ public class TeamServiceImpl extends ServiceImpl<TeamMapper, Team> implements IT
             throw new BizException(400, "小组ID不合法");
         }
 
-        Team team = getById(request.getTeamId());
+        Team team = teamRedisCacheService.getOrLoad(teamRedisCacheService.teamBaseKey(request.getTeamId()), Team.class,
+            TeamRedisCacheService.TEAM_BASE_TTL, () -> getById(request.getTeamId()));
         if (team == null) {
             throw new BizException(404, "小组不存在");
         }
@@ -118,7 +121,8 @@ public class TeamServiceImpl extends ServiceImpl<TeamMapper, Team> implements IT
         if (teamId == null || teamId <= 0) {
             throw new BizException(400, "小组ID不合法");
         }
-        Team team = getById(teamId);
+        Team team = teamRedisCacheService.getOrLoad(teamRedisCacheService.teamBaseKey(teamId), Team.class,
+            TeamRedisCacheService.TEAM_BASE_TTL, () -> getById(teamId));
         if (team == null) {
             throw new BizException(404, "小组不存在");
         }
@@ -169,6 +173,7 @@ public class TeamServiceImpl extends ServiceImpl<TeamMapper, Team> implements IT
         team.setDescription(description);
         team.setTotalDeadline(request.getTotalDeadline());
         updateById(team);
+        teamRedisCacheService.evictTeamBaseAfterCommit(team.getId());
         log.info("Team info updated, teamId={}, operatorUserId={}", team.getId(), userId);
     }
 

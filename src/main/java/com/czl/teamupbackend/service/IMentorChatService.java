@@ -18,4 +18,6 @@ public interface IMentorChatService {
     MentorChatHistoryVO getHistory(Long userId, MentorChatHistoryRequest request);
 
     MentorSessionItemVO createSession(Long userId, MentorCreateSessionRequest request);
+
+    void resumeAfterConfirmation(Long runId, Long userId, String toolName, String resultSummary);
 }

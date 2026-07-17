@@ -103,3 +103,8 @@ collaboration-summary:
   internal-token: ${COLLABORATION_SUMMARY_INTERNAL_TOKEN:teamup-local-collaboration-summary-token}
   delay-queue:
     scan-interval-ms: ${COLLABORATION_SUMMARY_SCAN_INTERVAL_MS:10000}
+
+collaboration-agent:
+  # 仅 TeamUp 后端可调用协同服务的草案快照与受控写入接口。
+  internal-url: ${COLLABORATION_AGENT_INTERNAL_URL:http://127.0.0.1:1235}
+  internal-token: ${COLLABORATION_AGENT_INTERNAL_TOKEN:teamup-local-collaboration-agent-token}

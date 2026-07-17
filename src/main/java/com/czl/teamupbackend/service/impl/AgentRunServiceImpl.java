@@ -23,7 +23,7 @@ public class AgentRunServiceImpl implements AgentRunService {
     private static final String STATUS_WAITING_CONFIRMATION = "WAITING_CONFIRMATION";
     private static final String STATUS_COMPLETED = "COMPLETED";
     private static final String STATUS_FAILED = "FAILED";
-    private static final int MAX_STEPS = 12;
+    private static final int MAX_STEPS = 20;
     private final AiAgentRunMapper agentRunMapper;
     private final AiAgentStepMapper agentStepMapper;
     private final TransactionTemplate transactionTemplate;
@@ -73,7 +73,15 @@ public class AgentRunServiceImpl implements AgentRunService {
         String safeSummary = limit(summary == null ? "等待用户确认后执行" : summary, 500);
         agentRunMapper.updateById(new AiAgentRun().setId(runId).setStatus(STATUS_WAITING_CONFIRMATION));
         recordStep(runId, "DRAFT", toolName, safeSummary, STATUS_WAITING_CONFIRMATION);
-        publish(runId, STATUS_WAITING_CONFIRMATION, "DRAFT", toolName, safeSummary);
+    }
+
+    @Override
+    public boolean isWaitingConfirmation(Long runId) {
+        if (runId == null) {
+            return false;
+        }
+        AiAgentRun run = agentRunMapper.selectById(runId);
+        return run != null && STATUS_WAITING_CONFIRMATION.equals(run.getStatus());
     }
 
     @Override
@@ -88,7 +96,6 @@ public class AgentRunServiceImpl implements AgentRunService {
         agentRunMapper.updateById(new AiAgentRun().setId(runId).setStatus(STATUS_RUNNING));
         recordStep(runId, "WRITE", toolName, safeSummary, "DONE");
         recordStep(runId, "VERIFY", toolName, "用户确认操作结果已验证", "DONE");
-        complete(runId, 0);
     }
 
     @Override
@@ -122,7 +129,7 @@ public class AgentRunServiceImpl implements AgentRunService {
         }
         Boolean recorded = transactionTemplate.execute(statusHolder -> recordStepInTransaction(runId, stepType, toolName, summary, status));
         if (Boolean.TRUE.equals(recorded)) {
-            publish(runId, STATUS_RUNNING, stepType, toolName, summary);
+            publish(runId, status, stepType, toolName, summary);
         }
     }
 

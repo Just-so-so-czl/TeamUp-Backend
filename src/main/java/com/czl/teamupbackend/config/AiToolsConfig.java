@@ -1,9 +1,11 @@
 package com.czl.teamupbackend.config;
 
 import com.czl.teamupbackend.commen.exception.BizException;
+import com.czl.teamupbackend.commen.exception.CollaborationDocumentPatchValidationException;
 import com.czl.teamupbackend.service.AgentRunService;
 import com.czl.teamupbackend.mapper.DocumentMapper;
 import com.czl.teamupbackend.model.dto.AiDocumentFullTextToolRequest;
+import com.czl.teamupbackend.model.dto.AiCollaborationDocumentPatchToolRequest;
 import com.czl.teamupbackend.model.dto.AiEmailProposalToolRequest;
 import com.czl.teamupbackend.model.dto.AiTaskListProposalToolRequest;
 import com.czl.teamupbackend.model.dto.AiTeamDocumentsToolRequest;
@@ -26,6 +28,7 @@ import com.czl.teamupbackend.service.ITeamService;
 import com.czl.teamupbackend.service.TeamWorkProfileService;
 import com.czl.teamupbackend.service.AgentEmailProposalService;
 import com.czl.teamupbackend.service.AgentTaskListProposalService;
+import com.czl.teamupbackend.service.AgentCollaborationDocumentProposalService;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -48,6 +51,7 @@ public class AiToolsConfig {
 
     private static final String TOOL_CTX_USER_ID = "userId";
     private static final String TOOL_CTX_TEAM_ID = "teamId";
+    private static final String TOOL_CTX_DOCUMENT_ID = "documentId";
     private static final String TOOL_CTX_AGENT_RUN_ID = "agentRunId";
     private static final int DOCUMENT_TYPE_RESOURCE = 1;
     private static final int DOCUMENT_TYPE_COLLAB = 2;
@@ -289,6 +293,57 @@ public class AiToolsConfig {
     }
 
     @Bean
+    @Description("读取当前文档助手会话绑定的协作文档实时快照。返回 snapshotId、顶层标题/段落块、原文哈希和全文；编辑草案必须引用本轮返回的 snapshotId 与目标块 textHash。")
+    public BiFunction<Map<String, Object>, ToolContext, Map<String, Object>> queryCurrentCollaborationDocument(
+        AgentCollaborationDocumentProposalService proposalService,
+        AgentRunService agentRunService
+    ) {
+        return (request, toolContext) -> {
+            Long runId = getLongValue(toolContext, TOOL_CTX_AGENT_RUN_ID);
+            Long userId = getLongValue(toolContext, TOOL_CTX_USER_ID);
+            Long teamId = getLongValue(toolContext, TOOL_CTX_TEAM_ID);
+            Long documentId = getLongValue(toolContext, TOOL_CTX_DOCUMENT_ID);
+            if (runId == null || userId == null || teamId == null || documentId == null) {
+                throw new BizException(400, "当前协作文档读取缺少受控会话上下文");
+            }
+            recordReadTool(agentRunService, toolContext, "queryCurrentCollaborationDocument", "正在读取当前协作文档快照");
+            return proposalService.captureForAgent(runId, userId, teamId, documentId);
+        };
+    }
+
+    @Bean
+    @Description("为当前协作文档生成待确认编辑草案。必须先调用 queryCurrentCollaborationDocument，并只使用其返回的 snapshotId、targetBlockId 和 expectedTextHash。仅支持 INSERT_AFTER、REPLACE_BLOCK、DELETE_BLOCK；不会立即写入文档。")
+    public BiFunction<AiCollaborationDocumentPatchToolRequest, ToolContext, Map<String, Object>> proposeCollaborationDocumentPatch(
+        AgentCollaborationDocumentProposalService proposalService,
+        AgentRunService agentRunService
+    ) {
+        return (request, toolContext) -> {
+            Long runId = getLongValue(toolContext, TOOL_CTX_AGENT_RUN_ID);
+            Long userId = getLongValue(toolContext, TOOL_CTX_USER_ID);
+            Long teamId = getLongValue(toolContext, TOOL_CTX_TEAM_ID);
+            Long documentId = getLongValue(toolContext, TOOL_CTX_DOCUMENT_ID);
+            if (runId == null || userId == null || teamId == null || documentId == null) {
+                throw new BizException(400, "协作文档草案缺少受控会话上下文");
+            }
+            if (agentRunService.isWaitingConfirmation(runId)) {
+                return pendingConfirmationResult();
+            }
+            try {
+                var proposal = proposalService.create(runId, userId, teamId, documentId, request);
+                return confirmationCreatedResult(proposal.getDraftId(), proposal.getStatus(), "协作文档编辑草案已生成，等待用户审核并应用");
+            } catch (CollaborationDocumentPatchValidationException exception) {
+                return Map.of(
+                    "proposalCreated", false,
+                    "retryable", true,
+                    "errorCode", "INVALID_PATCH",
+                    "message", exception.getMessage(),
+                    "retryInstruction", "请保留相同 snapshotId。REPLACE_BLOCK 只能放一个标题或段落；多个新段落请拆为一次 REPLACE_BLOCK 加一项或多项 INSERT_AFTER，然后重新调用本工具。"
+                );
+            }
+        };
+    }
+
+    @Bean
     @Description("生成一份给当前小组指定成员发送邮件的待确认提案。recipientUserId 必须严格使用本轮 queryTeamMembers 工具结果中的 userId，禁止猜测、根据昵称或邮箱转换、或使用历史记忆中的ID。若返回 recipientValid=false，必须先调用 queryTeamMembers 后再重试。此工具绝不会发送邮件；用户将在界面中编辑并确认后由传统后端API执行。")
     public BiFunction<AiEmailProposalToolRequest, ToolContext, Map<String, Object>> proposeTeamEmail(
         AgentEmailProposalService proposalService,
@@ -300,10 +355,12 @@ public class AiToolsConfig {
             Long teamId = getLongValue(toolContext, TOOL_CTX_TEAM_ID);
             if (runId == null || userId == null || teamId == null) throw new BizException(400, "邮件提案缺少受控运行上下文");
             recordReadTool(agentRunService, toolContext, "proposeTeamEmail", "正在生成可编辑的邮件发送提案");
+            if (agentRunService.isWaitingConfirmation(runId)) {
+                return pendingConfirmationResult();
+            }
             try {
                 var proposal = proposalService.create(runId, userId, teamId, request);
-                return Map.of("proposalCreated", true, "recipientValid", true, "draftId", proposal.getDraftId(), "status", proposal.getStatus(),
-                    "message", "邮件草案已生成，等待用户编辑并确认发送");
+                return confirmationCreatedResult(proposal.getDraftId(), proposal.getStatus(), "邮件草案已生成，等待用户编辑并确认发送");
             } catch (BizException exception) {
                 if (isInvalidEmailRecipient(exception)) {
                     return Map.of(
@@ -320,14 +377,36 @@ public class AiToolsConfig {
     @Bean
     @Description("生成任务清单和子任务的待确认草案。只填写 title、description 和 taskDescriptions；禁止填写截止时间、负责人或任何分配信息。此工具不会创建任务，用户将在界面中编辑并确认。")
     public BiFunction<AiTaskListProposalToolRequest, ToolContext, Map<String, Object>> proposeTaskList(
-        AgentTaskListProposalService proposalService
+        AgentTaskListProposalService proposalService,
+        AgentRunService agentRunService
     ) {
         return (request, toolContext) -> {
             Long runId = getLongValue(toolContext, TOOL_CTX_AGENT_RUN_ID); Long userId = getLongValue(toolContext, TOOL_CTX_USER_ID); Long teamId = getLongValue(toolContext, TOOL_CTX_TEAM_ID);
             if (runId == null || userId == null || teamId == null) throw new BizException(400, "任务草案缺少受控运行上下文");
+            if (agentRunService.isWaitingConfirmation(runId)) {
+                return pendingConfirmationResult();
+            }
             var proposal = proposalService.create(runId, userId, teamId, request);
-            return Map.of("proposalCreated", true, "draftId", proposal.getDraftId(), "status", proposal.getStatus(), "message", "任务清单草案已生成，等待用户编辑并确认创建");
+            return confirmationCreatedResult(proposal.getDraftId(), proposal.getStatus(), "任务清单草案已生成，等待用户编辑并确认创建");
         };
+    }
+
+    private Map<String, Object> confirmationCreatedResult(Object draftId, Object status, String message) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("proposalCreated", true);
+        result.put("requiresConfirmation", true);
+        result.put("draftId", draftId);
+        result.put("status", status);
+        result.put("message", message);
+        return result;
+    }
+
+    private Map<String, Object> pendingConfirmationResult() {
+        return Map.of(
+            "proposalCreated", false,
+            "requiresConfirmation", true,
+            "message", "本轮已有待确认草案。必须等待用户确认后才能继续后续操作。"
+        );
     }
 
     @Bean

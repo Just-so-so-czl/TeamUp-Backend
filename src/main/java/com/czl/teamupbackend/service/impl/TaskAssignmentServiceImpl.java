@@ -21,6 +21,7 @@ import com.czl.teamupbackend.model.vo.WebSocketNotifyVO;
 import com.czl.teamupbackend.realtime.OnlineUserSessionManager;
 import com.czl.teamupbackend.service.ITaskAssignmentService;
 import com.czl.teamupbackend.service.ITeamMessageService;
+import com.czl.teamupbackend.service.TeamRedisCacheService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import lombok.RequiredArgsConstructor;
@@ -48,6 +49,7 @@ public class TaskAssignmentServiceImpl extends ServiceImpl<TaskAssignmentMapper,
     private final ITeamMessageService teamMessageService;
     private final OnlineUserSessionManager onlineUserSessionManager;
     private final ObjectMapper objectMapper;
+    private final TeamRedisCacheService teamRedisCacheService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -57,6 +59,7 @@ public class TaskAssignmentServiceImpl extends ServiceImpl<TaskAssignmentMapper,
         boolean created = createAssignmentIfAbsent(taskId, currentUserId);
         if (created) {
             pushClaimMessage(taskContext, currentUserId);
+            teamRedisCacheService.evictTaskBoardAfterCommit(taskContext.team.getId());
         }
         log.info("Task claimed, taskId={}, userId={}", taskId, currentUserId);
     }
@@ -74,6 +77,7 @@ public class TaskAssignmentServiceImpl extends ServiceImpl<TaskAssignmentMapper,
         boolean created = createAssignmentIfAbsent(taskId, assigneeUserId);
         if (created) {
             pushAssignMessage(taskContext, operatorUserId, assigneeUserId);
+            teamRedisCacheService.evictTaskBoardAfterCommit(taskContext.team.getId());
         }
         log.info("Task assigned, taskId={}, operatorUserId={}, assigneeUserId={}", taskId, operatorUserId, assigneeUserId);
     }
@@ -93,6 +97,7 @@ public class TaskAssignmentServiceImpl extends ServiceImpl<TaskAssignmentMapper,
         if (!removed) {
             throw new BizException(404, "该成员不是当前任务负责人");
         }
+        teamRedisCacheService.evictTaskBoardAfterCommit(taskContext.team.getId());
         log.info("Task assignee removed, taskId={}, operatorUserId={}, assigneeUserId={}", taskId, operatorUserId, assigneeUserId);
     }
 

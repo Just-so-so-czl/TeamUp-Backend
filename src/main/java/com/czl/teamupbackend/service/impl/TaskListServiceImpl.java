@@ -21,6 +21,7 @@ import com.czl.teamupbackend.model.vo.TeamTaskAssigneeVO;
 import com.czl.teamupbackend.model.vo.TeamTaskListItemVO;
 import com.czl.teamupbackend.model.vo.TeamTaskListVO;
 import com.czl.teamupbackend.service.ITaskListService;
+import com.czl.teamupbackend.service.TeamRedisCacheService;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -45,20 +46,28 @@ public class TaskListServiceImpl extends ServiceImpl<TaskListMapper, TaskList> i
     private final TaskMapper taskMapper;
     private final TaskAssignmentMapper taskAssignmentMapper;
     private final UserMapper userMapper;
+    private final TeamRedisCacheService teamRedisCacheService;
 
     @Override
     public TeamTaskListVO listTeamTaskLists(Long currentUserId, Long teamId) {
         TeamMember selfMember = validateMembership(currentUserId, teamId);
+        String cacheKey = teamRedisCacheService.taskBoardKey(teamId, currentUserId);
+        TeamTaskListVO cached = teamRedisCacheService.get(cacheKey, TeamTaskListVO.class);
+        if (cached != null) {
+            return cached;
+        }
         List<TaskList> taskLists = this.list(new LambdaQueryWrapper<TaskList>()
             .eq(TaskList::getTeamId, teamId)
             .orderByAsc(TaskList::getDeadline)
             .orderByDesc(TaskList::getCreateTime));
 
         if (taskLists.isEmpty()) {
-            return TeamTaskListVO.builder()
+            TeamTaskListVO result = TeamTaskListVO.builder()
                 .currentUserCanCreate(canCreateTaskList(selfMember))
                 .taskLists(new ArrayList<>())
                 .build();
+            teamRedisCacheService.put(cacheKey, result, TeamRedisCacheService.TASK_BOARD_TTL);
+            return result;
         }
 
         List<Long> taskListIds = taskLists.stream().map(TaskList::getId).collect(Collectors.toList());
@@ -130,10 +139,12 @@ public class TaskListServiceImpl extends ServiceImpl<TaskListMapper, TaskList> i
                 .build();
         }).collect(Collectors.toList());
 
-        return TeamTaskListVO.builder()
+        TeamTaskListVO result = TeamTaskListVO.builder()
             .currentUserCanCreate(canCreateTaskList(selfMember))
             .taskLists(listItems)
             .build();
+        teamRedisCacheService.put(cacheKey, result, TeamRedisCacheService.TASK_BOARD_TTL);
+        return result;
     }
 
     @Override
@@ -163,6 +174,7 @@ public class TaskListServiceImpl extends ServiceImpl<TaskListMapper, TaskList> i
         taskList.setCreatorId(currentUserId);
         taskList.setDeadline(deadline);
         this.save(taskList);
+        teamRedisCacheService.evictTaskBoardAfterCommit(teamId);
         log.info("Task list created, teamId={}, creatorId={}, taskListId={}", teamId, currentUserId, taskList.getId());
     }
 
@@ -205,6 +217,7 @@ public class TaskListServiceImpl extends ServiceImpl<TaskListMapper, TaskList> i
         taskList.setDescription(validDesc.isEmpty() ? null : validDesc);
         taskList.setDeadline(deadline);
         this.updateById(taskList);
+        teamRedisCacheService.evictTaskBoardAfterCommit(taskList.getTeamId());
         log.info("Task list updated, taskListId={}, operatorUserId={}", taskListId, currentUserId);
     }
 
@@ -233,6 +246,7 @@ public class TaskListServiceImpl extends ServiceImpl<TaskListMapper, TaskList> i
                 .eq(Task::getTaskListId, taskListId));
         }
         this.removeById(taskListId);
+        teamRedisCacheService.evictTaskBoardAfterCommit(taskList.getTeamId());
         log.info("Task list deleted, taskListId={}, operatorUserId={}", taskListId, currentUserId);
     }
 

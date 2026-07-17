@@ -12,6 +12,7 @@ public interface AgentRunService {
     void recordReadTool(Long runId, String toolName, String summary);
     void awaitConfirmation(Long runId, String summary);
     void awaitConfirmation(Long runId, String toolName, String summary);
+    boolean isWaitingConfirmation(Long runId);
     void resumeAfterConfirmedWrite(Long runId, String resultSummary);
     void resumeAfterConfirmedWrite(Long runId, String toolName, String resultSummary);
     void markAnswering(Long runId);
