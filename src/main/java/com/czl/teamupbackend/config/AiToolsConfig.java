@@ -5,6 +5,7 @@ import com.czl.teamupbackend.service.AgentRunService;
 import com.czl.teamupbackend.mapper.DocumentMapper;
 import com.czl.teamupbackend.model.dto.AiDocumentFullTextToolRequest;
 import com.czl.teamupbackend.model.dto.AiEmailProposalToolRequest;
+import com.czl.teamupbackend.model.dto.AiTaskListProposalToolRequest;
 import com.czl.teamupbackend.model.dto.AiTeamDocumentsToolRequest;
 import com.czl.teamupbackend.model.dto.TeamIdToolRequest;
 import com.czl.teamupbackend.model.dto.TeamDetailRequest;
@@ -24,6 +25,7 @@ import com.czl.teamupbackend.service.ITeamMemberService;
 import com.czl.teamupbackend.service.ITeamService;
 import com.czl.teamupbackend.service.TeamWorkProfileService;
 import com.czl.teamupbackend.service.AgentEmailProposalService;
+import com.czl.teamupbackend.service.AgentTaskListProposalService;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -312,6 +314,19 @@ public class AiToolsConfig {
                 }
                 throw exception;
             }
+        };
+    }
+
+    @Bean
+    @Description("生成任务清单和子任务的待确认草案。只填写 title、description 和 taskDescriptions；禁止填写截止时间、负责人或任何分配信息。此工具不会创建任务，用户将在界面中编辑并确认。")
+    public BiFunction<AiTaskListProposalToolRequest, ToolContext, Map<String, Object>> proposeTaskList(
+        AgentTaskListProposalService proposalService
+    ) {
+        return (request, toolContext) -> {
+            Long runId = getLongValue(toolContext, TOOL_CTX_AGENT_RUN_ID); Long userId = getLongValue(toolContext, TOOL_CTX_USER_ID); Long teamId = getLongValue(toolContext, TOOL_CTX_TEAM_ID);
+            if (runId == null || userId == null || teamId == null) throw new BizException(400, "任务草案缺少受控运行上下文");
+            var proposal = proposalService.create(runId, userId, teamId, request);
+            return Map.of("proposalCreated", true, "draftId", proposal.getDraftId(), "status", proposal.getStatus(), "message", "任务清单草案已生成，等待用户编辑并确认创建");
         };
     }
 

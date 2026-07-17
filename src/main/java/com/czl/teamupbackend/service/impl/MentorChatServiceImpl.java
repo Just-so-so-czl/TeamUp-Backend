@@ -15,6 +15,7 @@ import com.czl.teamupbackend.model.vo.MentorChatHistoryVO;
 import com.czl.teamupbackend.model.vo.MentorChatMessageItemVO;
 import com.czl.teamupbackend.model.vo.MentorAgentStepVO;
 import com.czl.teamupbackend.model.vo.AgentEmailProposalVO;
+import com.czl.teamupbackend.model.vo.AgentTaskListProposalVO;
 import com.czl.teamupbackend.model.vo.MentorSessionItemVO;
 import com.czl.teamupbackend.model.vo.MentorSessionListVO;
 import com.czl.teamupbackend.repository.MentorChatMessageRepository;
@@ -28,6 +29,7 @@ import com.czl.teamupbackend.service.MemoryLifecycleService;
 import com.czl.teamupbackend.service.ITeamService;
 import com.czl.teamupbackend.service.IDocumentService;
 import com.czl.teamupbackend.service.AgentEmailProposalService;
+import com.czl.teamupbackend.service.AgentTaskListProposalService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.time.Duration;
@@ -83,6 +85,8 @@ public class MentorChatServiceImpl implements IMentorChatService {
     private static final int SESSION_TITLE_PREFIX_MAX = 18;
     private static final String TOOL_CTX_USER_ID = "userId";
     private static final String TOOL_CTX_TEAM_ID = "teamId";
+    private static final String TOOL_CTX_SESSION_TYPE = "sessionType";
+    private static final String TOOL_CTX_DOCUMENT_ID = "documentId";
     private static final String TOOL_CTX_AGENT_RUN_ID = "agentRunId";
     private static final String SYSTEM_PROMPT = """
         你是 TeamUp 平台的智能导师，负责大学生小组协作的助手。
@@ -109,7 +113,8 @@ public class MentorChatServiceImpl implements IMentorChatService {
            - 你不能声称已创建任务、已修改分工、已更新文档或已代表用户作出决定。
            - 涉及业务状态变化时，先说明建议和影响，等待用户确认。
             - 需要向指定组员发送邮件时，必须先在本轮调用 queryTeamMembers；recipientUserId 必须逐字使用该工具结果中的 userId，禁止猜测、按昵称/邮箱推导或复用历史ID。
-            - 若 proposeTeamEmail 返回 recipientValid=false，立即调用 queryTeamMembers 重新获取成员，再使用返回的精确 userId 重试一次。
+           - 若 proposeTeamEmail 返回 recipientValid=false，立即调用 queryTeamMembers 重新获取成员，再使用返回的精确 userId 重试一次。
+           - 需要创建任务清单时，调用 proposeTaskList，只填写清单标题、描述和子任务描述；不得填写DDL、负责人或人员分配。
            - proposeTeamEmail 不会发送邮件；提案生成后立即停止后续业务动作，等待用户在界面中编辑并确认。
 
           回答要求：
@@ -118,6 +123,37 @@ public class MentorChatServiceImpl implements IMentorChatService {
           - 不推断成员人格、能力高低或敏感隐私。
           - 使用简洁、友好、可执行的中文回答。
             """;
+    private static final String DOCUMENT_ASSISTANT_SYSTEM_PROMPT = """
+        你是 TeamUp 平台当前协作文档的文档助手，只服务于本次会话绑定的协作文档。
+        你运行在受控的自适应 Plan + ReAct 引擎中：先在内部确定最短可行步骤，再直接回答或调用允许的只读工具。
+        你的首要职责是帮助用户理解、组织、补全、润色、压缩、审查和改进当前文档的内容；可以结合当前用户明确引用的选中文本给出针对性建议。
+
+        小组概况、成员、任务、资料文档、其他协作文档和团队工作画像仅用于理解项目背景、交付要求和协作约定，不能偏离当前文档去处理小组管理、成员管理、邮件沟通或任务创建。
+
+        工具使用规则：
+        1. 只有需要真实小组事实、任务要求、资料依据或工作画像时才调用工具，并且只调用解决当前问题所需的最少工具。
+        2. 用户询问当前文档的选中文本时，优先依据本轮引用内容回答；信息不足时明确说明并提出需要补充的上下文。
+        3. 工作画像中 status=SUGGESTED 的内容只是候选协作记忆，不能表述为已确认事实；只有 CONFIRMED 才可作为团队已确认约定。
+        4. 你当前没有修改协作文档、创建任务清单或发送邮件的能力。可以提供可直接采纳的改写稿、章节草案、待办建议或审查清单，但不得声称已经写入任何业务数据或文档。
+
+        回答要求：
+        - 以当前文档为中心，给出清晰、简洁、可直接编辑使用的中文内容。
+        - 明确区分文档已有事实、你的修改建议和待确认信息。
+        - 不推断成员人格、能力高低或敏感隐私。
+        """;
+    private static final List<String> SHARED_READ_TOOL_NAMES = List.of(
+        "queryTeamOverview", "queryTeamMembers", "queryTeamTaskLists", "queryTeamDocuments",
+        "queryDocumentFullText", "queryTeamWorkProfile"
+    );
+    private static final AgentProfile TEAM_MENTOR_PROFILE = new AgentProfile(
+        SYSTEM_PROMPT,
+        List.of("queryTeamOverview", "queryTeamMembers", "queryTeamTaskLists", "queryTeamDocuments",
+            "queryDocumentFullText", "proposeTeamEmail", "proposeTaskList", "queryTeamWorkProfile")
+    );
+    private static final AgentProfile COLLAB_DOCUMENT_PROFILE = new AgentProfile(
+        DOCUMENT_ASSISTANT_SYSTEM_PROMPT,
+        SHARED_READ_TOOL_NAMES
+    );
     private static final int HISTORY_WINDOW_MAX_TOKENS = 4000;
     private static final int TITLE_GENERATION_TIMEOUT_SECONDS = 15;
     private static final String HISTORY_PROMPT_PREFIX = """
@@ -141,6 +177,7 @@ public class MentorChatServiceImpl implements IMentorChatService {
     private final AiAgentRunMapper agentRunMapper;
     private final AiAgentStepMapper agentStepMapper;
     private final AgentEmailProposalService agentEmailProposalService;
+    private final AgentTaskListProposalService agentTaskListProposalService;
 
     @Value("${spring.ai.openai.summary.model}")
     private String summaryModel;
@@ -192,7 +229,8 @@ public class MentorChatServiceImpl implements IMentorChatService {
         aiChatMessageIndexService.save(assistantMsgIndex);
 
         SseEmitter emitter = new SseEmitter(0L);
-        Map<String, Object> toolContext = buildToolContext(userId, request.getTeamId(), session.getTeamId());
+        AgentProfile profile = resolveAgentProfile(session);
+        Map<String, Object> toolContext = buildToolContext(userId, request.getTeamId(), session);
         String historyPrompt = buildSlidingWindowHistoryPrompt(session.getId(), userMsgIndex.getId());
         var agentRun = agentRunService.start(
             session.getId(), session.getTeamId(), userId, traceId, sessionType, storedUserMessage, modelPromptTokenCount);
@@ -201,7 +239,7 @@ public class MentorChatServiceImpl implements IMentorChatService {
         final String finalUserPrompt = modelPrompt;
         final String finalStoredUserMessage = storedUserMessage;
         mvcAsyncTaskExecutor.execute(() -> doStream(
-            emitter, finalUserPrompt, historyPrompt,
+            emitter, finalUserPrompt, historyPrompt, profile,
             session, traceId, assistantMsgIndex, assistantMongoId, toolContext, shouldGenerateTitle,
             agentRun.getId(), finalStoredUserMessage));
         return emitter;
@@ -236,7 +274,7 @@ public class MentorChatServiceImpl implements IMentorChatService {
         return "第" + startLine + "至第" + endLine + "行";
     }
 
-    private void doStream(SseEmitter emitter, String message, String historyPrompt,
+    private void doStream(SseEmitter emitter, String message, String historyPrompt, AgentProfile profile,
                           AiChatSession session, String traceId,
                           AiChatMessageIndex assistantMsgIndex, String assistantMongoId,
                           Map<String, Object> toolContext,
@@ -255,11 +293,10 @@ public class MentorChatServiceImpl implements IMentorChatService {
                 .streamUsage(true)
                 .build();
             ChatClient.ChatClientRequestSpec promptSpec = chatClient.prompt()
-                .system(buildSystemPrompt(historyPrompt))
+                .system(buildSystemPrompt(profile, historyPrompt))
                 .user(message)
                 .options(requestOptions)
-                .toolNames("queryTeamOverview", "queryTeamMembers", "queryTeamTaskLists", "queryTeamDocuments",
-                    "queryDocumentFullText", "proposeTeamEmail", "queryTeamWorkProfile")
+                .toolNames(profile.toolNames().toArray(String[]::new))
                 .toolContext(toolContext);
             promptSpec.stream()
                 .chatResponse()
@@ -396,6 +433,8 @@ public class MentorChatServiceImpl implements IMentorChatService {
         Map<Long, List<MentorAgentStepVO>> stepsByRunId = loadAgentStepsByRunId(runByTraceId.values());
         Map<Long, AgentEmailProposalVO> emailProposalsByRunId = agentEmailProposalService.findByRunIds(userId,
             runByTraceId.values().stream().map(AiAgentRun::getId).toList());
+        Map<Long, AgentTaskListProposalVO> taskListProposalsByRunId = agentTaskListProposalService.findByRunIds(userId,
+            runByTraceId.values().stream().map(AiAgentRun::getId).toList());
 
         List<MentorChatMessageItemVO> messages = indexes.stream()
             .map(i -> {
@@ -417,6 +456,7 @@ public class MentorChatServiceImpl implements IMentorChatService {
                     .agentStatus(agentRun == null ? null : agentRun.getStatus())
                     .agentSteps(agentRun == null ? List.of() : stepsByRunId.getOrDefault(agentRun.getId(), List.of()))
                     .emailProposal(agentRun == null ? null : emailProposalsByRunId.get(agentRun.getId()))
+                    .taskListProposal(agentRun == null ? null : taskListProposalsByRunId.get(agentRun.getId()))
                     .build();
             })
             .collect(Collectors.toList());
@@ -716,14 +756,25 @@ public class MentorChatServiceImpl implements IMentorChatService {
         return normalized.substring(0, SESSION_TITLE_PREFIX_MAX) + "...";
     }
 
-    private Map<String, Object> buildToolContext(Long userId, Long requestTeamId, Long sessionTeamId) {
-        Map<String, Object> context = new HashMap<>(4);
+    private AgentProfile resolveAgentProfile(AiChatSession session) {
+        if (session != null && SESSION_TYPE_COLLAB_DOC.equals(resolveSessionType(session.getSessionType()))) {
+            return COLLAB_DOCUMENT_PROFILE;
+        }
+        return TEAM_MENTOR_PROFILE;
+    }
+
+    private Map<String, Object> buildToolContext(Long userId, Long requestTeamId, AiChatSession session) {
+        Map<String, Object> context = new HashMap<>(6);
         if (userId != null) {
             context.put(TOOL_CTX_USER_ID, userId);
         }
-        Long resolvedTeamId = requestTeamId != null ? requestTeamId : sessionTeamId;
+        Long resolvedTeamId = requestTeamId != null ? requestTeamId : session.getTeamId();
         if (resolvedTeamId != null) {
             context.put(TOOL_CTX_TEAM_ID, resolvedTeamId);
+        }
+        context.put(TOOL_CTX_SESSION_TYPE, resolveSessionType(session.getSessionType()));
+        if (session.getDocumentId() != null) {
+            context.put(TOOL_CTX_DOCUMENT_ID, session.getDocumentId());
         }
         return context;
     }
@@ -819,11 +870,11 @@ public class MentorChatServiceImpl implements IMentorChatService {
         }
     }
 
-    private String buildSystemPrompt(String historyPrompt) {
+    private String buildSystemPrompt(AgentProfile profile, String historyPrompt) {
         if (historyPrompt == null || historyPrompt.isBlank()) {
-            return SYSTEM_PROMPT;
+            return profile.systemPrompt();
         }
-        return SYSTEM_PROMPT + "\n\n" + historyPrompt;
+        return profile.systemPrompt() + "\n\n" + historyPrompt;
     }
 
     private String buildSlidingWindowHistoryPrompt(Long sessionId, Long excludedMessageId) {
@@ -963,5 +1014,8 @@ public class MentorChatServiceImpl implements IMentorChatService {
     private static class UsageUsageHolder {
         private Integer completionTokens;
         private Integer promptTokens;
+    }
+
+    private record AgentProfile(String systemPrompt, List<String> toolNames) {
     }
 }

@@ -64,20 +64,30 @@ public class AgentRunServiceImpl implements AgentRunService {
 
     @Override
     public void awaitConfirmation(Long runId, String summary) {
+        awaitConfirmation(runId, "proposeTeamEmail", summary);
+    }
+
+    @Override
+    public void awaitConfirmation(Long runId, String toolName, String summary) {
         if (runId == null) return;
         String safeSummary = limit(summary == null ? "等待用户确认后执行" : summary, 500);
         agentRunMapper.updateById(new AiAgentRun().setId(runId).setStatus(STATUS_WAITING_CONFIRMATION));
-        recordStep(runId, "DRAFT", "proposeTeamEmail", safeSummary, STATUS_WAITING_CONFIRMATION);
-        publish(runId, STATUS_WAITING_CONFIRMATION, "DRAFT", "proposeTeamEmail", safeSummary);
+        recordStep(runId, "DRAFT", toolName, safeSummary, STATUS_WAITING_CONFIRMATION);
+        publish(runId, STATUS_WAITING_CONFIRMATION, "DRAFT", toolName, safeSummary);
     }
 
     @Override
     public void resumeAfterConfirmedWrite(Long runId, String resultSummary) {
+        resumeAfterConfirmedWrite(runId, "sendTeamEmail", resultSummary);
+    }
+
+    @Override
+    public void resumeAfterConfirmedWrite(Long runId, String toolName, String resultSummary) {
         if (runId == null) return;
         String safeSummary = limit(resultSummary == null ? "已按确认内容执行" : resultSummary, 500);
         agentRunMapper.updateById(new AiAgentRun().setId(runId).setStatus(STATUS_RUNNING));
-        recordStep(runId, "WRITE", "sendTeamEmail", safeSummary, "DONE");
-        recordStep(runId, "VERIFY", "sendTeamEmail", "邮件发送结果已确认", "DONE");
+        recordStep(runId, "WRITE", toolName, safeSummary, "DONE");
+        recordStep(runId, "VERIFY", toolName, "用户确认操作结果已验证", "DONE");
         complete(runId, 0);
     }
 
