@@ -4,12 +4,14 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.czl.teamupbackend.commen.exception.BizException;
 import com.czl.teamupbackend.commen.exception.CollaborationDocumentPatchValidationException;
+import com.czl.teamupbackend.event.AgentConfirmationCompletedEvent;
 import com.czl.teamupbackend.mapper.AiActionDraftMapper;
 import com.czl.teamupbackend.mapper.DocumentMapper;
 import com.czl.teamupbackend.model.dto.AiCollaborationDocumentPatchToolRequest;
 import com.czl.teamupbackend.model.entity.AiActionDraft;
 import com.czl.teamupbackend.model.entity.Document;
 import com.czl.teamupbackend.model.mongo.AgentCollaborationSnapshotDoc;
+import com.czl.teamupbackend.model.vo.AgentCollaborationDocumentPatchBlockVO;
 import com.czl.teamupbackend.model.vo.AgentCollaborationDocumentPatchChangeVO;
 import com.czl.teamupbackend.model.vo.AgentCollaborationDocumentPatchProposalVO;
 import com.czl.teamupbackend.repository.AgentCollaborationSnapshotRepository;
@@ -25,9 +27,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
 @Slf4j
@@ -49,6 +51,7 @@ public class AgentCollaborationDocumentProposalServiceImpl implements AgentColla
     private final CollaborationAgentDocumentGateway documentGateway;
     private final AgentRunService agentRunService;
     private final ObjectMapper objectMapper;
+    private final ApplicationEventPublisher applicationEventPublisher;
 
     @Override
     public Map<String, Object> captureForAgent(Long runId, Long userId, Long teamId, Long documentId) {
@@ -81,6 +84,9 @@ public class AgentCollaborationDocumentProposalServiceImpl implements AgentColla
     public AgentCollaborationDocumentPatchProposalVO create(Long runId, Long userId, Long teamId, Long documentId,
                                                               AiCollaborationDocumentPatchToolRequest request) {
         validateContext(runId, userId, teamId, documentId);
+        if (hasExecuted(userId, runId)) {
+            throw new BizException(409, "当前运行已成功应用协作文档修改，不能重复生成同类草案");
+        }
         if (request == null || request.getSnapshotId() == null || request.getSnapshotId().isBlank()) {
             throw new BizException(400, "文档编辑草案缺少 snapshotId");
         }
@@ -130,8 +136,23 @@ public class AgentCollaborationDocumentProposalServiceImpl implements AgentColla
             .eq(AiActionDraft::getRunId, runId)
             .eq(AiActionDraft::getCreatorUserId, userId)
             .eq(AiActionDraft::getActionType, ACTION_TYPE)
+            .eq(AiActionDraft::getStatus, PENDING)
+            .orderByDesc(AiActionDraft::getCreatedAt)
+            .orderByDesc(AiActionDraft::getId)
             .last("LIMIT 1"));
         return draft == null ? null : toVo(draft, read(draft));
+    }
+
+    @Override
+    public boolean hasExecuted(Long userId, Long runId) {
+        if (userId == null || runId == null) {
+            return false;
+        }
+        return draftMapper.selectCount(new LambdaQueryWrapper<AiActionDraft>()
+            .eq(AiActionDraft::getRunId, runId)
+            .eq(AiActionDraft::getCreatorUserId, userId)
+            .eq(AiActionDraft::getActionType, ACTION_TYPE)
+            .eq(AiActionDraft::getStatus, EXECUTED)) > 0;
     }
 
     @Override
@@ -172,6 +193,10 @@ public class AgentCollaborationDocumentProposalServiceImpl implements AgentColla
             .setResultSummary(result.resultSummary())
             .setExecutedAt(LocalDateTime.now()));
         agentRunService.resumeAfterConfirmedWrite(draft.getRunId(), "applyCollaborationDocumentPatch", result.resultSummary());
+        log.info("Collaboration document patch publishing Agent confirmation event, draftId={}, runId={}",
+            draftId, draft.getRunId());
+        applicationEventPublisher.publishEvent(new AgentConfirmationCompletedEvent(
+            draft.getRunId(), userId, "applyCollaborationDocumentPatch", result.resultSummary()));
         draft.setStatus(EXECUTED);
         draft.setResultSummary(result.resultSummary());
         return toVo(draft, payload);
@@ -182,12 +207,17 @@ public class AgentCollaborationDocumentProposalServiceImpl implements AgentColla
         if (userId == null || runIds == null || runIds.isEmpty()) {
             return Map.of();
         }
-        return draftMapper.selectList(new LambdaQueryWrapper<AiActionDraft>()
-                .eq(AiActionDraft::getCreatorUserId, userId)
-                .eq(AiActionDraft::getActionType, ACTION_TYPE)
-                .in(AiActionDraft::getRunId, runIds))
-            .stream()
-            .collect(Collectors.toMap(AiActionDraft::getRunId, draft -> toVo(draft, read(draft)), (newer, older) -> newer));
+        List<AiActionDraft> drafts = draftMapper.selectList(new LambdaQueryWrapper<AiActionDraft>()
+            .eq(AiActionDraft::getCreatorUserId, userId)
+            .eq(AiActionDraft::getActionType, ACTION_TYPE)
+            .in(AiActionDraft::getRunId, runIds)
+            .orderByDesc(AiActionDraft::getCreatedAt)
+            .orderByDesc(AiActionDraft::getId));
+        Map<Long, AgentCollaborationDocumentPatchProposalVO> result = new LinkedHashMap<>();
+        for (AiActionDraft draft : drafts) {
+            result.putIfAbsent(draft.getRunId(), toVo(draft, read(draft)));
+        }
+        return result;
     }
 
     private void validateContext(Long runId, Long userId, Long teamId, Long documentId) {
@@ -218,10 +248,37 @@ public class AgentCollaborationDocumentProposalServiceImpl implements AgentColla
         return AgentCollaborationDocumentPatchChangeVO.builder()
             .operation(stringValue(change.get("operation")))
             .targetBlockId(stringValue(change.get("targetBlockId")))
+            .destinationBlockId(stringValue(change.get("destinationBlockId")))
             .beforeText(stringValue(change.get("beforeText")))
             .afterText(stringValue(change.get("afterText")))
+            .fromPositionLabel(stringValue(change.get("fromPositionLabel")))
+            .toPositionLabel(stringValue(change.get("toPositionLabel")))
+            .fromPreviousLabel(stringValue(change.get("fromPreviousLabel")))
+            .fromNextLabel(stringValue(change.get("fromNextLabel")))
+            .toPreviousLabel(stringValue(change.get("toPreviousLabel")))
+            .toNextLabel(stringValue(change.get("toNextLabel")))
+            .beforeBlocks(toBlockVos(change.get("beforeBlocks")))
+            .afterBlocks(toBlockVos(change.get("afterBlocks")))
             .reason(stringValue(change.get("reason")))
             .build();
+    }
+
+    private List<AgentCollaborationDocumentPatchBlockVO> toBlockVos(Object value) {
+        return toListOfMaps(value).stream()
+            .map(block -> AgentCollaborationDocumentPatchBlockVO.builder()
+                .type(stringValue(block.get("type")))
+                .text(stringValue(block.get("text")))
+                .level(integerValue(block.get("level")))
+                .items(toStringList(block.get("items")))
+                .start(integerValue(block.get("start")))
+                .language(stringValue(block.get("language")))
+                .headers(toStringList(block.get("headers")))
+                .rows(toStringRows(block.get("rows")))
+                .alt(stringValue(block.get("alt")))
+                .title(stringValue(block.get("title")))
+                .previewObjectKey(stringValue(block.get("previewObjectKey")))
+                .build())
+            .toList();
     }
 
     private String write(Map<String, Object> payload) {
@@ -246,6 +303,25 @@ public class AgentCollaborationDocumentProposalServiceImpl implements AgentColla
 
     private List<Map<String, Object>> toListOfMaps(Object value) {
         return value == null ? List.of() : objectMapper.convertValue(value, new TypeReference<>() { });
+    }
+
+    private List<String> toStringList(Object value) {
+        return value == null ? List.of() : objectMapper.convertValue(value, new TypeReference<>() { });
+    }
+
+    private List<List<String>> toStringRows(Object value) {
+        return value == null ? List.of() : objectMapper.convertValue(value, new TypeReference<>() { });
+    }
+
+    private Integer integerValue(Object value) {
+        if (value == null || String.valueOf(value).isBlank()) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(String.valueOf(value));
+        } catch (NumberFormatException exception) {
+            return null;
+        }
     }
 
     private String stringValue(Object value) {

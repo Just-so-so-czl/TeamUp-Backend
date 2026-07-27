@@ -1,13 +1,15 @@
 package com.czl.teamupbackend.service;
 
 import com.czl.teamupbackend.model.entity.AiAgentRun;
+import java.util.List;
 import java.util.function.Consumer;
 
 /** Coordinates the durable run audit trail and transient SSE progress notifications. */
 public interface AgentRunService {
     AiAgentRun start(Long sessionId, Long teamId, Long userId, String traceId, String sceneType, String goal, int promptTokens);
-    void registerListener(Long runId, Consumer<AgentRunProgress> listener);
-    void unregisterListener(Long runId);
+    void addListener(Long runId, Consumer<AgentRunProgress> listener);
+    void removeListener(Long runId, Consumer<AgentRunProgress> listener);
+    List<AgentRunProgress> getProgressSnapshot(Long runId);
     void markPlanning(Long runId);
     void recordReadTool(Long runId, String toolName, String summary);
     void awaitConfirmation(Long runId, String summary);

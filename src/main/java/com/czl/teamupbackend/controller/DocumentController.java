@@ -6,6 +6,7 @@ import com.czl.teamupbackend.commen.result.Result;
 import com.czl.teamupbackend.model.dto.DocumentDeleteRequest;
 import com.czl.teamupbackend.model.dto.DocumentCollabCreateRequest;
 import com.czl.teamupbackend.model.dto.DocumentDownloadRequest;
+import com.czl.teamupbackend.model.dto.DocumentPdfExportRequest;
 import com.czl.teamupbackend.model.dto.DocumentListQueryRequest;
 import com.czl.teamupbackend.model.dto.DocumentUpdateRequest;
 import com.czl.teamupbackend.model.dto.DocumentUploadMetaRequest;
@@ -13,6 +14,7 @@ import com.czl.teamupbackend.model.dto.MentorSidebarDocRequest;
 import com.czl.teamupbackend.model.dto.MentorDocumentMentionSearchRequest;
 import com.czl.teamupbackend.model.vo.MentorDocumentMentionVO;
 import java.util.List;
+import java.nio.charset.StandardCharsets;
 import com.czl.teamupbackend.model.vo.DocumentListVO;
 import com.czl.teamupbackend.model.vo.MentorSidebarDocListVO;
 import com.czl.teamupbackend.service.IDocumentService;
@@ -25,6 +27,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 
 @RestController
 @RequestMapping("/document")
@@ -133,5 +139,24 @@ public class DocumentController {
         }
         String url = documentService.generateDownloadUrl(userId, request.getDocumentId());
         return Result.success("查询成功", url);
+    }
+
+    @PostMapping(value = "/export-pdf", produces = MediaType.APPLICATION_PDF_VALUE)
+    public ResponseEntity<byte[]> exportPdf(@RequestBody DocumentPdfExportRequest request) {
+        Long userId = UserContext.getCurrentUserId();
+        if (userId == null) {
+            throw new BizException(401, "未登录");
+        }
+        if (request == null || request.getDocumentId() == null) {
+            throw new BizException(400, "文档ID不能为空");
+        }
+        byte[] pdf = documentService.exportCollaborationDocumentPdf(userId, request.getDocumentId());
+        String fileName = "teamup-collaboration-" + request.getDocumentId() + ".pdf";
+        return ResponseEntity.ok()
+            .contentType(MediaType.APPLICATION_PDF)
+            .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                .filename(fileName, StandardCharsets.UTF_8).build().toString())
+            .contentLength(pdf.length)
+            .body(pdf);
     }
 }

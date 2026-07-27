@@ -23,7 +23,6 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -49,6 +48,9 @@ public class AgentEmailProposalServiceImpl implements AgentEmailProposalService 
     public AgentEmailProposalVO create(Long runId, Long operatorUserId, Long teamId, AiEmailProposalToolRequest request) {
         if (runId == null || operatorUserId == null || teamId == null || request == null || request.getRecipientUserId() == null) {
             throw new BizException(400, "邮件提案参数不完整");
+        }
+        if (hasExecuted(operatorUserId, runId)) {
+            throw new BizException(409, "当前运行已成功发送邮件，不能重复生成同类草案");
         }
         TeamMember operator = member(teamId, operatorUserId);
         TeamMemberRoleEnum role = TeamMemberRoleEnum.fromCode(operator.getRole());
@@ -80,8 +82,22 @@ public class AgentEmailProposalServiceImpl implements AgentEmailProposalService 
     public AgentEmailProposalVO getPending(Long operatorUserId, Long runId) {
         AiActionDraft draft = draftMapper.selectOne(new LambdaQueryWrapper<AiActionDraft>()
             .eq(AiActionDraft::getRunId, runId).eq(AiActionDraft::getCreatorUserId, operatorUserId)
-            .eq(AiActionDraft::getActionType, ACTION_EMAIL_SEND).last("LIMIT 1"));
+            .eq(AiActionDraft::getActionType, ACTION_EMAIL_SEND)
+            .eq(AiActionDraft::getStatus, STATUS_PENDING)
+            .orderByDesc(AiActionDraft::getCreatedAt)
+            .orderByDesc(AiActionDraft::getId)
+            .last("LIMIT 1"));
         return draft == null ? null : toVo(draft, readPayload(draft));
+    }
+
+    @Override
+    public boolean hasExecuted(Long operatorUserId, Long runId) {
+        if (operatorUserId == null || runId == null) return false;
+        return draftMapper.selectCount(new LambdaQueryWrapper<AiActionDraft>()
+            .eq(AiActionDraft::getRunId, runId)
+            .eq(AiActionDraft::getCreatorUserId, operatorUserId)
+            .eq(AiActionDraft::getActionType, ACTION_EMAIL_SEND)
+            .eq(AiActionDraft::getStatus, STATUS_EXECUTED)) > 0;
     }
 
     @Override
@@ -91,6 +107,7 @@ public class AgentEmailProposalServiceImpl implements AgentEmailProposalService 
             throw new BizException(404, "邮件提案不存在或无权限");
         }
         if (STATUS_EXECUTED.equals(draft.getStatus())) return toVo(draft, readPayload(draft));
+        log.info("Email proposal execution started, draftId={}, runId={}, operatorUserId={}", draftId, draft.getRunId(), operatorUserId);
         boolean claimed = draftMapper.update(null, new LambdaUpdateWrapper<AiActionDraft>()
             .eq(AiActionDraft::getId, draftId).eq(AiActionDraft::getStatus, STATUS_PENDING)
             .set(AiActionDraft::getStatus, STATUS_SENDING).set(AiActionDraft::getUpdatedAt, LocalDateTime.now())) == 1;
@@ -104,11 +121,13 @@ public class AgentEmailProposalServiceImpl implements AgentEmailProposalService 
             draftMapper.updateById(new AiActionDraft().setId(draftId).setStatus(STATUS_EXECUTED).setPayloadJson(writePayload(payload))
                 .setResultSummary(summary).setErrorMsg("").setExecutedAt(LocalDateTime.now()));
             agentRunService.resumeAfterConfirmedWrite(draft.getRunId(), summary);
+            log.info("Email proposal publishing agent confirmation event, draftId={}, runId={}", draftId, draft.getRunId());
             applicationEventPublisher.publishEvent(new AgentConfirmationCompletedEvent(draft.getRunId(), operatorUserId, "sendTeamEmail", summary));
             draft.setStatus(STATUS_EXECUTED); draft.setPayloadJson(writePayload(payload)); draft.setResultSummary(summary);
             log.info("Email proposal executed, draftId={}, runId={}", draftId, draft.getRunId());
             return toVo(draft, payload);
         } catch (RuntimeException ex) {
+            log.error("Email proposal execution failed, draftId={}, runId={}", draftId, draft.getRunId(), ex);
             draftMapper.updateById(new AiActionDraft().setId(draftId).setStatus(STATUS_PENDING).setErrorMsg(limit(ex.getMessage(), 500)));
             throw ex;
         }
@@ -119,8 +138,14 @@ public class AgentEmailProposalServiceImpl implements AgentEmailProposalService 
         if (runIds == null || runIds.isEmpty()) return Map.of();
         List<AiActionDraft> drafts = draftMapper.selectList(new LambdaQueryWrapper<AiActionDraft>()
             .eq(AiActionDraft::getCreatorUserId, operatorUserId).eq(AiActionDraft::getActionType, ACTION_EMAIL_SEND)
-            .in(AiActionDraft::getRunId, runIds));
-        return drafts.stream().collect(Collectors.toMap(AiActionDraft::getRunId, draft -> toVo(draft, readPayload(draft)), (newer, ignored) -> newer));
+            .in(AiActionDraft::getRunId, runIds)
+            .orderByDesc(AiActionDraft::getCreatedAt)
+            .orderByDesc(AiActionDraft::getId));
+        Map<Long, AgentEmailProposalVO> result = new LinkedHashMap<>();
+        for (AiActionDraft draft : drafts) {
+            result.putIfAbsent(draft.getRunId(), toVo(draft, readPayload(draft)));
+        }
+        return result;
     }
 
     private TeamMember member(Long teamId, Long userId) {

@@ -293,7 +293,7 @@ public class AiToolsConfig {
     }
 
     @Bean
-    @Description("读取当前文档助手会话绑定的协作文档实时快照。返回 snapshotId、顶层标题/段落块、原文哈希和全文；编辑草案必须引用本轮返回的 snapshotId 与目标块 textHash。")
+    @Description("读取当前文档助手会话绑定的协作文档实时快照。返回 snapshotId、可编辑的顶层文本块、完整表格和图片块，以及每个块的 blockId 与 textHash。文档草案只能使用本轮快照返回的定位和校验信息。")
     public BiFunction<Map<String, Object>, ToolContext, Map<String, Object>> queryCurrentCollaborationDocument(
         AgentCollaborationDocumentProposalService proposalService,
         AgentRunService agentRunService
@@ -312,7 +312,7 @@ public class AiToolsConfig {
     }
 
     @Bean
-    @Description("为当前协作文档生成待确认编辑草案。必须先调用 queryCurrentCollaborationDocument，并只使用其返回的 snapshotId、targetBlockId 和 expectedTextHash。仅支持 INSERT_AFTER、REPLACE_BLOCK、DELETE_BLOCK；不会立即写入文档。")
+    @Description("为当前协作文档生成唯一一份完整待确认编辑草案。必须先调用 queryCurrentCollaborationDocument，并只使用其返回的 snapshotId、blockId 和 textHash。INSERT_BEFORE、INSERT_AFTER 和 REPLACE_BLOCK 使用 newBlocks，支持文本结构块和完整 TABLE；TABLE 使用 headers 和矩形 rows。删除图片使用 DELETE_BLOCK。移动图片只能使用 MOVE_IMAGE_BEFORE 或 MOVE_IMAGE_AFTER，target 必须是快照中的图片，destinationBlockId 和 expectedDestinationTextHash 必须来自快照；不得在 newBlocks 中创建、复制或伪造图片。所有修改必须放入同一个 operations 数组，不会立即写入文档。")
     public BiFunction<AiCollaborationDocumentPatchToolRequest, ToolContext, Map<String, Object>> proposeCollaborationDocumentPatch(
         AgentCollaborationDocumentProposalService proposalService,
         AgentRunService agentRunService
@@ -328,6 +328,10 @@ public class AiToolsConfig {
             if (agentRunService.isWaitingConfirmation(runId)) {
                 return pendingConfirmationResult();
             }
+            if (proposalService.hasExecuted(userId, runId)) {
+                return alreadyExecutedResult("COLLAB_DOCUMENT_PATCH",
+                    "本 Run 已成功应用协作文档修改，请直接生成最终总结，不要重复创建文档草案。");
+            }
             try {
                 var proposal = proposalService.create(runId, userId, teamId, documentId, request);
                 return confirmationCreatedResult(proposal.getDraftId(), proposal.getStatus(), "协作文档编辑草案已生成，等待用户审核并应用");
@@ -337,7 +341,7 @@ public class AiToolsConfig {
                     "retryable", true,
                     "errorCode", "INVALID_PATCH",
                     "message", exception.getMessage(),
-                    "retryInstruction", "请保留相同 snapshotId。REPLACE_BLOCK 只能放一个标题或段落；多个新段落请拆为一次 REPLACE_BLOCK 加一项或多项 INSERT_AFTER，然后重新调用本工具。"
+                    "retryInstruction", "请保留相同 snapshotId，按错误信息修正。每个目标只能出现一次；完整表格使用 TABLE 块的 headers 和等列数 rows；图片只能删除或使用 MOVE_IMAGE_BEFORE/MOVE_IMAGE_AFTER 移动。请仍在一次调用的 operations 中提交全部修改。"
                 );
             }
         };
@@ -358,10 +362,16 @@ public class AiToolsConfig {
             if (agentRunService.isWaitingConfirmation(runId)) {
                 return pendingConfirmationResult();
             }
+            if (proposalService.hasExecuted(userId, runId)) {
+                return alreadyExecutedResult("EMAIL_SEND", "本 Run 已成功发送邮件，请继续处理其他未完成事项或直接生成最终总结。");
+            }
             try {
                 var proposal = proposalService.create(runId, userId, teamId, request);
                 return confirmationCreatedResult(proposal.getDraftId(), proposal.getStatus(), "邮件草案已生成，等待用户编辑并确认发送");
             } catch (BizException exception) {
+                if (proposalService.hasExecuted(userId, runId)) {
+                    return alreadyExecutedResult("EMAIL_SEND", "本 Run 已成功发送邮件，请勿重复生成邮件草案。");
+                }
                 if (isInvalidEmailRecipient(exception)) {
                     return Map.of(
                         "proposalCreated", false,
@@ -386,8 +396,18 @@ public class AiToolsConfig {
             if (agentRunService.isWaitingConfirmation(runId)) {
                 return pendingConfirmationResult();
             }
-            var proposal = proposalService.create(runId, userId, teamId, request);
-            return confirmationCreatedResult(proposal.getDraftId(), proposal.getStatus(), "任务清单草案已生成，等待用户编辑并确认创建");
+            if (proposalService.hasExecuted(userId, runId)) {
+                return alreadyExecutedResult("TASK_LIST_CREATE", "本 Run 已成功创建任务清单，请继续处理其他未完成事项或直接生成最终总结。");
+            }
+            try {
+                var proposal = proposalService.create(runId, userId, teamId, request);
+                return confirmationCreatedResult(proposal.getDraftId(), proposal.getStatus(), "任务清单草案已生成，等待用户编辑并确认创建");
+            } catch (BizException exception) {
+                if (proposalService.hasExecuted(userId, runId)) {
+                    return alreadyExecutedResult("TASK_LIST_CREATE", "本 Run 已成功创建任务清单，请勿重复生成任务清单草案。");
+                }
+                throw exception;
+            }
         };
     }
 
@@ -406,6 +426,16 @@ public class AiToolsConfig {
             "proposalCreated", false,
             "requiresConfirmation", true,
             "message", "本轮已有待确认草案。必须等待用户确认后才能继续后续操作。"
+        );
+    }
+
+    private Map<String, Object> alreadyExecutedResult(String actionType, String message) {
+        return Map.of(
+            "proposalCreated", false,
+            "requiresConfirmation", false,
+            "alreadyExecuted", true,
+            "actionType", actionType,
+            "message", message
         );
     }
 

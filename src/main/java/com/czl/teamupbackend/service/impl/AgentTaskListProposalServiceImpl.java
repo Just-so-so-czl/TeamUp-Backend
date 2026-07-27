@@ -22,12 +22,13 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.context.ApplicationEventPublisher;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class AgentTaskListProposalServiceImpl implements AgentTaskListProposalService {
@@ -45,6 +46,7 @@ public class AgentTaskListProposalServiceImpl implements AgentTaskListProposalSe
     @Override
     public AgentTaskListProposalVO create(Long runId, Long userId, Long teamId, AiTaskListProposalToolRequest request) {
         if (runId == null || userId == null || teamId == null || request == null) throw new BizException(400, "任务清单提案参数不完整");
+        if (hasExecuted(userId, runId)) throw new BizException(409, "当前运行已成功创建任务清单，不能重复生成同类草案");
         Team team = teamMapper.selectById(teamId);
         if (team == null || team.getTotalDeadline() == null) throw new BizException(409, "小组未设置总截止时间，无法生成任务清单草案");
         Map<String, Object> payload = new LinkedHashMap<>();
@@ -58,13 +60,35 @@ public class AgentTaskListProposalServiceImpl implements AgentTaskListProposalSe
         return toVo(draft, payload);
     }
 
-    @Override public AgentTaskListProposalVO getPending(Long userId, Long runId) { AiActionDraft draft = draftMapper.selectOne(new LambdaQueryWrapper<AiActionDraft>().eq(AiActionDraft::getRunId, runId).eq(AiActionDraft::getCreatorUserId, userId).eq(AiActionDraft::getActionType, ACTION_TYPE).last("LIMIT 1")); return draft == null ? null : toVo(draft, read(draft)); }
+    @Override
+    public AgentTaskListProposalVO getPending(Long userId, Long runId) {
+        AiActionDraft draft = draftMapper.selectOne(new LambdaQueryWrapper<AiActionDraft>()
+            .eq(AiActionDraft::getRunId, runId)
+            .eq(AiActionDraft::getCreatorUserId, userId)
+            .eq(AiActionDraft::getActionType, ACTION_TYPE)
+            .eq(AiActionDraft::getStatus, PENDING)
+            .orderByDesc(AiActionDraft::getCreatedAt)
+            .orderByDesc(AiActionDraft::getId)
+            .last("LIMIT 1"));
+        return draft == null ? null : toVo(draft, read(draft));
+    }
+
+    @Override
+    public boolean hasExecuted(Long userId, Long runId) {
+        if (userId == null || runId == null) return false;
+        return draftMapper.selectCount(new LambdaQueryWrapper<AiActionDraft>()
+            .eq(AiActionDraft::getRunId, runId)
+            .eq(AiActionDraft::getCreatorUserId, userId)
+            .eq(AiActionDraft::getActionType, ACTION_TYPE)
+            .eq(AiActionDraft::getStatus, EXECUTED)) > 0;
+    }
 
     @Override @Transactional(rollbackFor = Exception.class)
     public AgentTaskListProposalVO execute(Long userId, Long draftId, String title, String description, String deadline, List<String> taskDescriptions) {
         AiActionDraft draft = draftMapper.selectById(draftId);
         if (draft == null || !userId.equals(draft.getCreatorUserId()) || !ACTION_TYPE.equals(draft.getActionType())) throw new BizException(404, "任务清单提案不存在或无权限");
         if (EXECUTED.equals(draft.getStatus())) return toVo(draft, read(draft));
+        log.info("Task-list proposal execution started, draftId={}, runId={}, userId={}", draftId, draft.getRunId(), userId);
         if (draftMapper.update(null, new LambdaUpdateWrapper<AiActionDraft>().eq(AiActionDraft::getId, draftId).eq(AiActionDraft::getStatus, PENDING).set(AiActionDraft::getStatus, "EXECUTING")) != 1) throw new BizException(409, "该任务清单草案正在处理或已完成");
         Map<String, Object> payload = read(draft); payload.put("title", title(title)); payload.put("description", description(description));
         LocalDateTime due = LocalDateTime.parse(deadline, DateTimeFormatter.ISO_LOCAL_DATE_TIME); payload.put("deadline", due.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)); payload.put("taskDescriptions", tasks(taskDescriptions));
@@ -75,11 +99,26 @@ public class AgentTaskListProposalServiceImpl implements AgentTaskListProposalSe
         String summary = "已创建任务清单“" + payload.get("title") + "”及" + ((List<?>) payload.get("taskDescriptions")).size() + "个子任务";
         draftMapper.updateById(new AiActionDraft().setId(draftId).setStatus(EXECUTED).setPayloadJson(write(payload)).setResultSummary(summary).setExecutedAt(LocalDateTime.now()));
         agentRunService.resumeAfterConfirmedWrite(draft.getRunId(), "createTaskList", summary);
+        log.info("Task-list proposal publishing agent confirmation event, draftId={}, runId={}", draftId, draft.getRunId());
         applicationEventPublisher.publishEvent(new AgentConfirmationCompletedEvent(draft.getRunId(), userId, "createTaskList", summary));
         draft.setStatus(EXECUTED); draft.setPayloadJson(write(payload)); draft.setResultSummary(summary); return toVo(draft, payload);
     }
 
-    @Override public Map<Long, AgentTaskListProposalVO> findByRunIds(Long userId, Collection<Long> runIds) { if (runIds == null || runIds.isEmpty()) return Map.of(); return draftMapper.selectList(new LambdaQueryWrapper<AiActionDraft>().eq(AiActionDraft::getCreatorUserId, userId).eq(AiActionDraft::getActionType, ACTION_TYPE).in(AiActionDraft::getRunId, runIds)).stream().collect(Collectors.toMap(AiActionDraft::getRunId, draft -> toVo(draft, read(draft)), (n, o) -> n)); }
+    @Override
+    public Map<Long, AgentTaskListProposalVO> findByRunIds(Long userId, Collection<Long> runIds) {
+        if (runIds == null || runIds.isEmpty()) return Map.of();
+        List<AiActionDraft> drafts = draftMapper.selectList(new LambdaQueryWrapper<AiActionDraft>()
+            .eq(AiActionDraft::getCreatorUserId, userId)
+            .eq(AiActionDraft::getActionType, ACTION_TYPE)
+            .in(AiActionDraft::getRunId, runIds)
+            .orderByDesc(AiActionDraft::getCreatedAt)
+            .orderByDesc(AiActionDraft::getId));
+        Map<Long, AgentTaskListProposalVO> result = new LinkedHashMap<>();
+        for (AiActionDraft draft : drafts) {
+            result.putIfAbsent(draft.getRunId(), toVo(draft, read(draft)));
+        }
+        return result;
+    }
     private String title(String value) { value = safe(value).trim(); if (value.length() < 2 || value.length() > 150) throw new BizException(400, "任务清单名称长度需在2到150个字符之间"); return value; }
     private String description(String value) { value = safe(value).trim(); if (value.length() > 1000) throw new BizException(400, "任务清单描述不能超过1000个字符"); return value; }
     private List<String> tasks(List<String> values) { if (values == null || values.isEmpty() || values.size() > 30) throw new BizException(400, "子任务数量需在1到30之间"); List<String> result = values.stream().map(v -> safe(v).trim()).filter(v -> !v.isEmpty()).distinct().toList(); if (result.isEmpty() || result.stream().anyMatch(v -> v.length() > 500)) throw new BizException(400, "子任务描述不合法"); return result; }

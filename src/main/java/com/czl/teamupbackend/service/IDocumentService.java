@@ -30,6 +30,8 @@ public interface IDocumentService extends IService<Document> {
 
     String generateDownloadUrl(Long currentUserId, Long documentId);
 
+    byte[] exportCollaborationDocumentPdf(Long currentUserId, Long documentId);
+
     MentorSidebarDocListVO listMentorSidebarDocs(Long currentUserId, Long teamId, Integer type);
 
     List<MentorDocumentMentionVO> searchMentorMentionDocuments(Long currentUserId, Long teamId, String keyword);

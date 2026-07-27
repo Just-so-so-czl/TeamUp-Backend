@@ -1,13 +1,17 @@
 package com.czl.teamupbackend.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.czl.teamupbackend.mapper.AiAgentRunMapper;
 import com.czl.teamupbackend.mapper.AiAgentStepMapper;
 import com.czl.teamupbackend.model.entity.AiAgentRun;
 import com.czl.teamupbackend.model.entity.AiAgentStep;
 import com.czl.teamupbackend.service.AgentRunService;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import lombok.RequiredArgsConstructor;
@@ -27,7 +31,7 @@ public class AgentRunServiceImpl implements AgentRunService {
     private final AiAgentRunMapper agentRunMapper;
     private final AiAgentStepMapper agentStepMapper;
     private final TransactionTemplate transactionTemplate;
-    private final Map<Long, Consumer<AgentRunProgress>> listeners = new ConcurrentHashMap<>();
+    private final Map<Long, Set<Consumer<AgentRunProgress>>> listeners = new ConcurrentHashMap<>();
 
     @Override
     public AiAgentRun start(Long sessionId, Long teamId, Long userId, String traceId, String sceneType, String goal, int promptTokens) {
@@ -39,17 +43,60 @@ public class AgentRunServiceImpl implements AgentRunService {
             .setPlanVersion(1).setStatus(STATUS_RUNNING).setStepCount(0).setPromptTokens(promptTokens)
             .setCompletionTokens(0).setErrorMsg("").setStartedAt(now);
         agentRunMapper.insert(run);
+        log.info("Agent run started, runId={}, traceId={}, sessionId={}, teamId={}, userId={}, sceneType={}, promptTokens={}",
+            run.getId(), traceId, sessionId, teamId, userId, sceneType, promptTokens);
         return run;
     }
 
     @Override
-    public void registerListener(Long runId, Consumer<AgentRunProgress> listener) {
-        if (runId != null && listener != null) listeners.put(runId, listener);
+    public void addListener(Long runId, Consumer<AgentRunProgress> listener) {
+        if (runId != null && listener != null) {
+            listeners.computeIfAbsent(runId, ignored -> ConcurrentHashMap.newKeySet()).add(listener);
+            log.info("Agent run SSE listener added, runId={}, subscriberCount={}", runId,
+                listeners.get(runId).size());
+        }
     }
 
     @Override
-    public void unregisterListener(Long runId) {
-        if (runId != null) listeners.remove(runId);
+    public void removeListener(Long runId, Consumer<AgentRunProgress> listener) {
+        if (runId != null && listener != null) {
+            Set<Consumer<AgentRunProgress>> runListeners = listeners.get(runId);
+            if (runListeners == null) {
+                return;
+            }
+            runListeners.remove(listener);
+            if (runListeners.isEmpty()) {
+                listeners.remove(runId, runListeners);
+            }
+            log.info("Agent run SSE listener removed, runId={}, subscriberCount={}", runId,
+                runListeners.size());
+        }
+    }
+
+    @Override
+    public List<AgentRunProgress> getProgressSnapshot(Long runId) {
+        if (runId == null) {
+            return List.of();
+        }
+        AiAgentRun run = agentRunMapper.selectById(runId);
+        if (run == null) {
+            return List.of();
+        }
+        List<AgentRunProgress> snapshot = new ArrayList<>(agentStepMapper.selectList(
+            new LambdaQueryWrapper<AiAgentStep>()
+                .eq(AiAgentStep::getRunId, runId)
+                .orderByAsc(AiAgentStep::getStepNo))
+            .stream()
+            .map(step -> new AgentRunProgress(String.valueOf(runId), step.getStatus(), step.getStepType(),
+                step.getToolName(), step.getDecisionSummary()))
+            .toList());
+        if (STATUS_COMPLETED.equals(run.getStatus()) || STATUS_FAILED.equals(run.getStatus())) {
+            snapshot.add(new AgentRunProgress(String.valueOf(runId), run.getStatus(), "FINISH", null,
+                STATUS_FAILED.equals(run.getStatus()) ? limit(run.getErrorMsg(), 500) : "已完成"));
+        }
+        log.info("Agent run progress snapshot loaded, runId={}, runStatus={}, progressCount={}",
+            runId, run.getStatus(), snapshot.size());
+        return snapshot;
     }
 
     @Override
@@ -70,8 +117,24 @@ public class AgentRunServiceImpl implements AgentRunService {
     @Override
     public void awaitConfirmation(Long runId, String toolName, String summary) {
         if (runId == null) return;
+        AiAgentRun run = agentRunMapper.selectById(runId);
+        if (run == null || STATUS_FAILED.equals(run.getStatus()) || STATUS_COMPLETED.equals(run.getStatus())) {
+            log.warn("Ignore confirmation wait transition for inactive Agent run, runId={}, currentStatus={}, toolName={}",
+                runId, run == null ? null : run.getStatus(), toolName);
+            return;
+        }
         String safeSummary = limit(summary == null ? "等待用户确认后执行" : summary, 500);
-        agentRunMapper.updateById(new AiAgentRun().setId(runId).setStatus(STATUS_WAITING_CONFIRMATION));
+        int updated = agentRunMapper.update(null, new LambdaUpdateWrapper<AiAgentRun>()
+            .eq(AiAgentRun::getId, runId)
+            .notIn(AiAgentRun::getStatus, STATUS_FAILED, STATUS_COMPLETED)
+            .set(AiAgentRun::getStatus, STATUS_WAITING_CONFIRMATION)
+            .set(AiAgentRun::getFinishedAt, null)
+            .set(AiAgentRun::getErrorMsg, ""));
+        if (updated != 1) {
+            log.warn("Agent run confirmation wait transition lost due to concurrent state change, runId={}, toolName={}", runId, toolName);
+            return;
+        }
+        log.info("Agent run waiting for confirmation, runId={}, toolName={}", runId, toolName);
         recordStep(runId, "DRAFT", toolName, safeSummary, STATUS_WAITING_CONFIRMATION);
     }
 
@@ -92,8 +155,24 @@ public class AgentRunServiceImpl implements AgentRunService {
     @Override
     public void resumeAfterConfirmedWrite(Long runId, String toolName, String resultSummary) {
         if (runId == null) return;
+        AiAgentRun run = agentRunMapper.selectById(runId);
+        if (run == null || !STATUS_WAITING_CONFIRMATION.equals(run.getStatus())) {
+            log.warn("Ignore confirmed write transition for Agent run outside confirmation state, runId={}, currentStatus={}, toolName={}",
+                runId, run == null ? null : run.getStatus(), toolName);
+            return;
+        }
         String safeSummary = limit(resultSummary == null ? "已按确认内容执行" : resultSummary, 500);
-        agentRunMapper.updateById(new AiAgentRun().setId(runId).setStatus(STATUS_RUNNING));
+        int updated = agentRunMapper.update(null, new LambdaUpdateWrapper<AiAgentRun>()
+            .eq(AiAgentRun::getId, runId)
+            .eq(AiAgentRun::getStatus, STATUS_WAITING_CONFIRMATION)
+            .set(AiAgentRun::getStatus, STATUS_RUNNING)
+            .set(AiAgentRun::getFinishedAt, null)
+            .set(AiAgentRun::getErrorMsg, ""));
+        if (updated != 1) {
+            log.warn("Agent run confirmed write transition lost due to concurrent state change, runId={}, toolName={}", runId, toolName);
+            return;
+        }
+        log.info("Agent run resumed after confirmed write, runId={}, toolName={}", runId, toolName);
         recordStep(runId, "WRITE", toolName, safeSummary, "DONE");
         recordStep(runId, "VERIFY", toolName, "用户确认操作结果已验证", "DONE");
     }
@@ -107,19 +186,31 @@ public class AgentRunServiceImpl implements AgentRunService {
     public void complete(Long runId, Integer completionTokens) {
         if (runId == null) return;
         AiAgentRun run = agentRunMapper.selectById(runId);
-        if (run != null && STATUS_WAITING_CONFIRMATION.equals(run.getStatus())) return;
+        if (run == null || !STATUS_RUNNING.equals(run.getStatus())) {
+            log.info("Ignore completion transition for Agent run outside running state, runId={}, currentStatus={}",
+                runId, run == null ? null : run.getStatus());
+            return;
+        }
         agentRunMapper.updateById(new AiAgentRun().setId(runId).setStatus(STATUS_COMPLETED)
             .setCompletionTokens(completionTokens == null ? 0 : completionTokens)
             .setFinishedAt(LocalDateTime.now()).setErrorMsg(""));
+        log.info("Agent run completed, runId={}, completionTokens={}", runId, completionTokens);
         publish(runId, STATUS_COMPLETED, "FINISH", null, "已完成");
     }
 
     @Override
     public void fail(Long runId, String errorMessage) {
         if (runId == null) return;
+        AiAgentRun run = agentRunMapper.selectById(runId);
+        if (run == null || !STATUS_RUNNING.equals(run.getStatus())) {
+            log.info("Ignore failure transition for Agent run outside running state, runId={}, currentStatus={}",
+                runId, run == null ? null : run.getStatus());
+            return;
+        }
         String safeMessage = limit(errorMessage == null ? "Agent 执行失败" : errorMessage, 500);
         agentRunMapper.updateById(new AiAgentRun().setId(runId).setStatus(STATUS_FAILED)
             .setErrorMsg(safeMessage).setFinishedAt(LocalDateTime.now()));
+        log.warn("Agent run failed, runId={}, errorLength={}", runId, safeMessage.length());
         publish(runId, STATUS_FAILED, "FINISH", null, safeMessage);
     }
 
@@ -129,6 +220,8 @@ public class AgentRunServiceImpl implements AgentRunService {
         }
         Boolean recorded = transactionTemplate.execute(statusHolder -> recordStepInTransaction(runId, stepType, toolName, summary, status));
         if (Boolean.TRUE.equals(recorded)) {
+            log.info("Agent run step recorded, runId={}, status={}, stepType={}, toolName={}",
+                runId, status, stepType, toolName);
             publish(runId, status, stepType, toolName, summary);
         }
     }
@@ -156,12 +249,21 @@ public class AgentRunServiceImpl implements AgentRunService {
     }
 
     private void publish(Long runId, String status, String stepType, String toolName, String summary) {
-        Consumer<AgentRunProgress> listener = listeners.get(runId);
-        if (listener == null) return;
-        try {
-            listener.accept(new AgentRunProgress(String.valueOf(runId), status, stepType, toolName, summary));
-        } catch (Exception e) {
-            log.debug("Publish agent progress failed, runId={}", runId, e);
+        Set<Consumer<AgentRunProgress>> runListeners = listeners.get(runId);
+        if (runListeners == null || runListeners.isEmpty()) {
+            log.info("Agent progress not sent because SSE listener is absent, runId={}, status={}, stepType={}, toolName={}",
+                runId, status, stepType, toolName);
+            return;
+        }
+        log.info("Agent progress publishing to SSE, runId={}, status={}, stepType={}, toolName={}, subscriberCount={}",
+            runId, status, stepType, toolName, runListeners.size());
+        AgentRunProgress progress = new AgentRunProgress(String.valueOf(runId), status, stepType, toolName, summary);
+        for (Consumer<AgentRunProgress> listener : runListeners) {
+            try {
+                listener.accept(progress);
+            } catch (Exception e) {
+                log.debug("Publish agent progress failed, runId={}", runId, e);
+            }
         }
     }
 

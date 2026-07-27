@@ -7,6 +7,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -56,6 +57,32 @@ public class CollaborationAgentDocumentGateway {
             return new ApplyResult(false, message(response.payload(), "文档已变化，草案无法安全应用"), "");
         }
         return new ApplyResult(true, "", String.valueOf(response.payload().getOrDefault("resultSummary", "文档草案已应用")));
+    }
+
+    public byte[] exportPdf(Long documentId, String title) {
+        try {
+            HttpRequest request = HttpRequest.newBuilder(URI.create(internalUrl + "/internal/agent-document/export-pdf"))
+                .timeout(Duration.ofSeconds(75))
+                .header("Content-Type", "application/json")
+                .header("X-Collaboration-Agent-Token", internalToken)
+                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(Map.of(
+                    "documentId", documentId,
+                    "title", title == null ? "协作文档" : title
+                ))))
+                .build();
+            HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                return response.body();
+            }
+            Map<String, Object> errorBody = objectMapper.readValue(
+                new String(response.body(), StandardCharsets.UTF_8), new TypeReference<>() { }
+            );
+            throw new BizException(502, "协同服务导出 PDF 失败：" + message(errorBody, "HTTP " + response.statusCode()));
+        } catch (BizException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new BizException(502, "无法导出协作文档 PDF：" + describeException(exception));
+        }
     }
 
     private GatewayResponse post(String path, Map<String, Object> payload, int allowedErrorStatus) {

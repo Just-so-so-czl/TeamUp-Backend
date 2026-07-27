@@ -10,6 +10,6 @@ public class AiCollaborationDocumentPatchToolRequest {
     @JsonPropertyDescription("snapshotId returned by queryCurrentCollaborationDocument in this agent run.")
     private String snapshotId;
 
-    @JsonPropertyDescription("One to twelve paragraph/section patch operations against that snapshot.")
+    @JsonPropertyDescription("One complete proposal containing 1 to 24 operations against the snapshot. Include every requested document change in this single array.")
     private List<AiCollaborationDocumentPatchOperation> operations;
 }

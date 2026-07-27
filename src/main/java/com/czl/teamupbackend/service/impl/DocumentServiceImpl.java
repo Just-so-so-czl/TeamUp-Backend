@@ -21,6 +21,7 @@ import com.czl.teamupbackend.model.vo.MentorSidebarDocListVO;
 import com.czl.teamupbackend.model.vo.MentorDocumentMentionVO;
 import com.czl.teamupbackend.service.IDocumentService;
 import com.czl.teamupbackend.service.IOssService;
+import com.czl.teamupbackend.service.CollaborationAgentDocumentGateway;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Collections;
@@ -46,7 +47,7 @@ public class  DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> 
 
     private static final int TYPE_RESOURCE = 1;
     private static final int TYPE_COLLAB = 2;
-    private static final String COLLAB_PLACEHOLDER_FILE_TYPE = "collab";
+    private static final String COLLAB_FILE_TYPE = "md";
     private static final String COLLABORATION_DOCUMENT_COLLECTION = "collaboration_documents";
     private static final int MENTION_SEARCH_LIMIT = 8;
     private static final Set<String> ALLOWED_FILE_TYPES = Set.of("pdf", "docx", "md", "txt");
@@ -56,6 +57,7 @@ public class  DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> 
     private final TeamMemberMapper teamMemberMapper;
     private final UserMapper userMapper;
     private final IOssService ossService;
+    private final CollaborationAgentDocumentGateway collaborationAgentDocumentGateway;
     private final ApplicationEventPublisher applicationEventPublisher;
     private final MongoTemplate mongoTemplate;
 
@@ -163,7 +165,7 @@ public class  DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> 
         doc.setTitle(validTitle);
         doc.setType(TYPE_COLLAB);
         doc.setStoragePath("");
-        doc.setFileType(COLLAB_PLACEHOLDER_FILE_TYPE);
+        doc.setFileType(COLLAB_FILE_TYPE);
         doc.setFileSize(0L);
         doc.setCreatorId(currentUserId);
         doc.setCreateTime(now);
@@ -235,6 +237,19 @@ public class  DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> 
     }
 
     @Override
+    public byte[] exportCollaborationDocumentPdf(Long currentUserId, Long documentId) {
+        Document document = getDocumentById(documentId);
+        validateMembership(currentUserId, document.getTeamId());
+        if (document.getType() == null || document.getType() != TYPE_COLLAB) {
+            throw new BizException(400, "仅协作文档支持导出 PDF");
+        }
+        byte[] pdf = collaborationAgentDocumentGateway.exportPdf(documentId, document.getTitle());
+        log.info("Collaboration document PDF exported, documentId={}, operatorUserId={}, bytes={}",
+            documentId, currentUserId, pdf.length);
+        return pdf;
+    }
+
+    @Override
     public MentorSidebarDocListVO listMentorSidebarDocs(Long currentUserId, Long teamId, Integer type) {
         TeamMember member = validateMembership(currentUserId, teamId);
         validateDocumentType(type);
@@ -258,10 +273,17 @@ public class  DocumentServiceImpl extends ServiceImpl<DocumentMapper, Document> 
             .title(doc.getTitle())
             .creatorName(userNameMap.getOrDefault(doc.getCreatorId(), "未知用户"))
             .dateLabel(doc.getCreateTime() == null ? "--/--" : doc.getCreateTime().format(MENTOR_DATE_FMT))
-            .fileType(doc.getFileType() == null ? "" : doc.getFileType().toLowerCase())
+            .fileType(resolveMentorSidebarFileType(doc))
             .build()).toList();
 
         return MentorSidebarDocListVO.builder().documents(items).build();
+    }
+
+    private String resolveMentorSidebarFileType(Document document) {
+        if (document.getType() != null && document.getType() == TYPE_COLLAB) {
+            return COLLAB_FILE_TYPE;
+        }
+        return document.getFileType() == null ? "" : document.getFileType().toLowerCase();
     }
 
     @Override

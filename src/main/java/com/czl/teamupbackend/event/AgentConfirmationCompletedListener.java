@@ -18,8 +18,11 @@ public class AgentConfirmationCompletedListener {
     @Async("mvcAsyncTaskExecutor")
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void resume(AgentConfirmationCompletedEvent event) {
+        log.info("Agent confirmation event received, runId={}, userId={}, toolName={}",
+            event.runId(), event.userId(), event.toolName());
         try {
             mentorChatService.resumeAfterConfirmation(event.runId(), event.userId(), event.toolName(), event.resultSummary());
+            log.info("Agent confirmation resume dispatch completed, runId={}, toolName={}", event.runId(), event.toolName());
         } catch (Exception e) {
             log.error("Resume Agent after confirmed action failed, runId={}, toolName={}", event.runId(), event.toolName(), e);
         }
