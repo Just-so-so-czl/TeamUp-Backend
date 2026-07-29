@@ -185,11 +185,25 @@ public class MentorChatServiceImpl implements IMentorChatService {
         系统观察到：上一项受控操作已由用户确认并执行成功。
         本次执行结果：%s
 
-        当前 Run 已执行动作清单（系统权威 JSON，仅 status=EXECUTED）：
+        当前 Run 动作决策清单（系统权威 JSON，仅包含 EXECUTED / REJECTED）：
         %s
 
         请基于原始用户目标和上述清单继续完成尚未完成的后续事项。清单中已有的 actionType 不得再次调用；若仍需产生其他写操作，只生成下一份待确认草案，并在草案生成后停止。
         当全部事项完成且不再需要待确认草案时，本阶段只输出一份可独立阅读的完整总回答：覆盖原始用户目标、实际完成结果和必要结论，不复述分析、工具调用、等待确认或执行过程，也不要输出“正在处理”等过程描述。总回答必须遵守用户可见输出隐私硬约束，不得包含任何内部 ID 或工具技术字段。
+        """;
+    private static final String REJECTION_OBSERVATION_PREFIX = """
+        系统观察到：用户已拒绝当前受控草案，并明确要求停止本 Run 的所有后续任务。
+        本次拒绝结果：%s
+
+        当前 Run 动作决策清单（系统权威 JSON，仅包含 EXECUTED / REJECTED）：
+        %s
+
+        硬约束：
+        1. 不得调用任何工具，也不得创建新的受控草案。
+        2. 不得继续执行原始目标中的任何后续任务。
+        3. 只生成一份可独立阅读的最终总结，明确区分已执行事项与已拒绝、未执行事项。
+        4. 不复述分析、工具调用、等待确认或执行过程，不输出“正在处理”等过程描述。
+        5. 总结必须遵守用户可见输出隐私硬约束，不得包含任何内部 ID、原始 JSON 或工具技术字段。
         """;
 
     private final ChatClient.Builder chatClientBuilder;
@@ -295,11 +309,28 @@ public class MentorChatServiceImpl implements IMentorChatService {
 
     @Override
     public void resumeAfterConfirmation(Long runId, Long userId, String toolName, String resultSummary) {
+        resumeAfterDecision(runId, userId, toolName, resultSummary, false);
+    }
+
+    @Override
+    public void resumeAfterRejection(Long runId, Long userId, String toolName, String resultSummary) {
+        resumeAfterDecision(runId, userId, toolName, resultSummary, true);
+    }
+
+    private void resumeAfterDecision(
+        Long runId,
+        Long userId,
+        String toolName,
+        String resultSummary,
+        boolean rejected
+    ) {
         if (runId == null || userId == null) {
-            log.warn("Skip Agent resume because identifiers are missing, runId={}, userId={}, toolName={}", runId, userId, toolName);
+            log.warn("Skip Agent decision resume because identifiers are missing, runId={}, userId={}, toolName={}, rejected={}",
+                runId, userId, toolName, rejected);
             return;
         }
-        log.info("Agent resume requested after confirmation, runId={}, userId={}, toolName={}", runId, userId, toolName);
+        log.info("Agent resume requested after decision, runId={}, userId={}, toolName={}, rejected={}",
+            runId, userId, toolName, rejected);
         AiAgentRun run = agentRunMapper.selectById(runId);
         if (run == null || !userId.equals(run.getUserId())) {
             log.warn("Skip Agent resume because run is unavailable, runId={}, userId={}", runId, userId);
@@ -321,19 +352,28 @@ public class MentorChatServiceImpl implements IMentorChatService {
         }
 
         AgentProfile profile = resolveAgentProfile(session);
-        Map<String, Object> toolContext = buildToolContext(userId, run.getTeamId(), session);
-        toolContext.put(TOOL_CTX_AGENT_RUN_ID, runId);
-        String safeResultSummary = resultSummary == null ? "已按用户确认执行" : resultSummary;
+        Map<String, Object> toolContext = rejected
+            ? Map.of()
+            : buildToolContext(userId, run.getTeamId(), session);
+        if (!rejected) {
+            toolContext.put(TOOL_CTX_AGENT_RUN_ID, runId);
+        }
+        String safeResultSummary = resultSummary == null
+            ? (rejected ? "用户已拒绝当前草案，未执行对应操作" : "已按用户确认执行")
+            : resultSummary;
         if (safeResultSummary.length() > 500) {
             safeResultSummary = safeResultSummary.substring(0, 500);
         }
-        String executedActionsJson = buildExecutedActionsJson(runId);
-        String observationPrompt = CONFIRMATION_OBSERVATION_PREFIX.formatted(safeResultSummary, executedActionsJson);
+        String actionDecisionsJson = buildActionDecisionsJson(runId);
+        String observationPrompt = (rejected ? REJECTION_OBSERVATION_PREFIX : CONFIRMATION_OBSERVATION_PREFIX)
+            .formatted(safeResultSummary, actionDecisionsJson);
         String historyPrompt = buildSlidingWindowHistoryPrompt(session.getId(), null);
         String systemPrompt = buildSystemPrompt(profile, historyPrompt) + "\n\n" + observationPrompt;
-        log.info("Agent resume scheduled, runId={}, sessionId={}, traceId={}, toolName={}", runId, session.getId(), traceId, toolName);
+        log.info("Agent resume scheduled, runId={}, sessionId={}, traceId={}, toolName={}, toolsEnabled={}",
+            runId, session.getId(), traceId, toolName, !rejected);
         mvcAsyncTaskExecutor.execute(() -> doResumeStream(
-            runId, session, traceId, assistantMsgIndex, assistantMsgIndex.getMongoMessageId(), profile, toolContext, systemPrompt, observationPrompt));
+            runId, session, traceId, assistantMsgIndex, assistantMsgIndex.getMongoMessageId(), profile,
+            toolContext, systemPrompt, observationPrompt, !rejected));
     }
 
     private void doResumeStream(
@@ -345,7 +385,8 @@ public class MentorChatServiceImpl implements IMentorChatService {
         AgentProfile profile,
         Map<String, Object> toolContext,
         String systemPrompt,
-        String observationPrompt
+        String observationPrompt,
+        boolean toolsEnabled
     ) {
         String previousAssistantText = loadMongoMessageContent(assistantMongoId);
         StringBuilder phaseAssistantText = new StringBuilder();
@@ -357,9 +398,11 @@ public class MentorChatServiceImpl implements IMentorChatService {
             ChatClient.ChatClientRequestSpec promptSpec = chatClientBuilder.build().prompt()
                 .system(systemPrompt)
                 .user(observationPrompt)
-                .options(OpenAiChatOptions.builder().streamUsage(true).build())
-                .toolNames(profile.toolNames().toArray(String[]::new))
-                .toolContext(toolContext);
+                .options(OpenAiChatOptions.builder().streamUsage(true).build());
+            if (toolsEnabled) {
+                promptSpec.toolNames(profile.toolNames().toArray(String[]::new))
+                    .toolContext(toolContext);
+            }
             promptSpec.stream().chatResponse()
                 .takeWhile(chatResponse -> !agentRunService.isWaitingConfirmation(runId))
                 .doOnNext(chatResponse -> {
@@ -383,10 +426,10 @@ public class MentorChatServiceImpl implements IMentorChatService {
         }
     }
 
-    private String buildExecutedActionsJson(Long runId) {
+    private String buildActionDecisionsJson(Long runId) {
         List<AiActionDraft> drafts = aiActionDraftMapper.selectList(new LambdaQueryWrapper<AiActionDraft>()
             .eq(AiActionDraft::getRunId, runId)
-            .eq(AiActionDraft::getStatus, "EXECUTED")
+            .in(AiActionDraft::getStatus, List.of("EXECUTED", "REJECTED"))
             .orderByAsc(AiActionDraft::getExecutedAt)
             .orderByAsc(AiActionDraft::getId));
         List<Map<String, Object>> actions = new ArrayList<>();
@@ -400,7 +443,7 @@ public class MentorChatServiceImpl implements IMentorChatService {
         try {
             return objectMapper.writeValueAsString(actions);
         } catch (Exception e) {
-            log.warn("Serialize executed Agent actions failed, runId={}", runId, e);
+            log.warn("Serialize Agent action decisions failed, runId={}", runId, e);
             return "[]";
         }
     }

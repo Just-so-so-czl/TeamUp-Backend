@@ -5,6 +5,7 @@ import com.czl.teamupbackend.commen.exception.BizException;
 import com.czl.teamupbackend.commen.result.Result;
 import com.czl.teamupbackend.model.dto.AgentEmailProposalExecuteRequest;
 import com.czl.teamupbackend.model.dto.AgentEmailProposalQueryRequest;
+import com.czl.teamupbackend.model.dto.AgentProposalRejectRequest;
 import com.czl.teamupbackend.model.vo.AgentEmailProposalVO;
 import com.czl.teamupbackend.service.AgentEmailProposalService;
 import lombok.RequiredArgsConstructor;
@@ -31,5 +32,12 @@ public class AgentEmailProposalController {
         if (userId == null) throw new BizException(401, "未登录");
         if (request == null || request.getDraftId() == null) throw new BizException(400, "draftId不能为空");
         return Result.success(proposalService.execute(userId, request.getDraftId(), request.getSubject(), request.getContent()));
+    }
+    @PostMapping("/reject")
+    public Result<AgentEmailProposalVO> reject(@RequestBody AgentProposalRejectRequest request) {
+        Long userId = UserContext.getCurrentUserId();
+        if (userId == null) throw new BizException(401, "未登录");
+        if (request == null || request.getDraftId() == null) throw new BizException(400, "draftId不能为空");
+        return Result.success(proposalService.reject(userId, request.getDraftId()));
     }
 }

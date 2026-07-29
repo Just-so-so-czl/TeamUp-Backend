@@ -2,6 +2,7 @@ package com.czl.teamupbackend.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.czl.teamupbackend.commen.exception.BizException;
 import com.czl.teamupbackend.mapper.AiAgentRunMapper;
 import com.czl.teamupbackend.mapper.AiAgentStepMapper;
 import com.czl.teamupbackend.model.entity.AiAgentRun;
@@ -175,6 +176,31 @@ public class AgentRunServiceImpl implements AgentRunService {
         log.info("Agent run resumed after confirmed write, runId={}, toolName={}", runId, toolName);
         recordStep(runId, "WRITE", toolName, safeSummary, "DONE");
         recordStep(runId, "VERIFY", toolName, "用户确认操作结果已验证", "DONE");
+    }
+
+    @Override
+    public void resumeAfterRejectedDecision(Long runId, String toolName, String resultSummary) {
+        if (runId == null) return;
+        AiAgentRun run = agentRunMapper.selectById(runId);
+        if (run == null || !STATUS_WAITING_CONFIRMATION.equals(run.getStatus())) {
+            log.warn("Ignore rejected decision transition for Agent run outside confirmation state, runId={}, currentStatus={}, toolName={}",
+                runId, run == null ? null : run.getStatus(), toolName);
+            throw new BizException(409, "当前Agent运行不在草案确认状态，无法拒绝");
+        }
+        String safeSummary = limit(resultSummary == null ? "用户已拒绝当前草案，未执行对应操作" : resultSummary, 500);
+        int updated = agentRunMapper.update(null, new LambdaUpdateWrapper<AiAgentRun>()
+            .eq(AiAgentRun::getId, runId)
+            .eq(AiAgentRun::getStatus, STATUS_WAITING_CONFIRMATION)
+            .set(AiAgentRun::getStatus, STATUS_RUNNING)
+            .set(AiAgentRun::getFinishedAt, null)
+            .set(AiAgentRun::getErrorMsg, ""));
+        if (updated != 1) {
+            log.warn("Agent run rejected decision transition lost due to concurrent state change, runId={}, toolName={}",
+                runId, toolName);
+            throw new BizException(409, "Agent运行状态已变化，请刷新后重试");
+        }
+        log.info("Agent run resumed for rejection summary, runId={}, toolName={}", runId, toolName);
+        recordStep(runId, "DRAFT", toolName, safeSummary, "DONE");
     }
 
     @Override

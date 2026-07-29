@@ -20,4 +20,6 @@ public interface IMentorChatService {
     MentorSessionItemVO createSession(Long userId, MentorCreateSessionRequest request);
 
     void resumeAfterConfirmation(Long runId, Long userId, String toolName, String resultSummary);
+
+    void resumeAfterRejection(Long runId, Long userId, String toolName, String resultSummary);
 }

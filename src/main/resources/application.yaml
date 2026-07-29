@@ -4,10 +4,10 @@ spring:
   main:
     banner-mode: "console"
   datasource:
-    url: jdbc:mysql://localhost:3307/TeamUp?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&connectTimeout=5000&socketTimeout=60000&autoReconnect=true
-    username: root
-    password: 103119
     driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://127.0.0.1:3307/TeamUp?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
     hikari:
       connection-timeout: 10000
       validation-timeout: 3000
@@ -20,11 +20,11 @@ spring:
       connection-test-query: SELECT 1
   data:
     redis:
-      host: localhost
-      port: 6379
-      database: 0
-      username:
-      password: 103119
+      host: ${SPRING_DATA_REDIS_HOST:127.0.0.1}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      database: ${SPRING_DATA_REDIS_DATABASE:0}
+      username: ${SPRING_DATA_REDIS_USERNAME:}
+      password: ${SPRING_DATA_REDIS_PASSWORD:}
       timeout: 5s
       connect-timeout: 5s
       lettuce:
@@ -35,18 +35,15 @@ spring:
           min-idle: 1
           max-wait: 2s
     mongodb:
-      uri: mongodb://admin:103119@localhost:27017/teamup?authSource=admin
-      auto-index-creation: true
-
-
+      uri: ${SPRING_DATA_MONGODB_URI:mongodb://127.0.0.1:27017/teamup}
+      auto-index-creation: ${SPRING_DATA_MONGODB_AUTO_INDEX_CREATION:false}
   rabbitmq:
-    host: localhost
-    port: 5672
-    username: admin
-    password: admin123
-    virtual-host: /
+    host: ${SPRING_RABBITMQ_HOST:127.0.0.1}
+    port: ${SPRING_RABBITMQ_PORT:5672}
+    username: ${SPRING_RABBITMQ_USERNAME}
+    password: ${SPRING_RABBITMQ_PASSWORD}
+    virtual-host: ${SPRING_RABBITMQ_VIRTUAL_HOST:/}
     connection-timeout: 60000
-
     listener:
       simple:
         acknowledge-mode: auto
@@ -75,36 +72,51 @@ spring:
       chat:
         options:
           model: ${SPRING_AI_OPENAI_CHAT_MODEL:gpt-4o-mini}
-
-server:
-  port: 8080
+  servlet:
+    multipart:
+      max-file-size: ${SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE:20MB}
+      max-request-size: ${SPRING_SERVLET_MULTIPART_MAX_REQUEST_SIZE:25MB}
 
 mybatis-plus:
   mapper-locations: classpath:mapper/**/*.xml
   type-aliases-package: com.czl.teamupbackend.model.entity
 
+server:
+  port: ${SERVER_PORT:8080}
+
 jwt:
-  secret: TeamUpJwtSecretKeyAtLeast32Chars!
-  expire-ms: 86400000
-  issuer: teamup-backend
+  secret: ${JWT_SECRET}
+  expire-ms: ${JWT_EXPIRE_MS:86400000}
+  issuer: ${JWT_ISSUER:teamup-backend}
 
 aliyun:
   oss:
     endpoint: ${ALIYUN_OSS_ENDPOINT:oss-cn-hangzhou.aliyuncs.com}
-    access-key-id: ${ALIYUN_OSS_ACCESS_KEY_ID:}
-    access-key-secret: ${ALIYUN_OSS_ACCESS_KEY_SECRET:}
-    bucket-name: ${ALIYUN_OSS_BUCKET_NAME:team-up-bucket}
+    access-key-id: ${ALIYUN_OSS_ACCESS_KEY_ID}
+    access-key-secret: ${ALIYUN_OSS_ACCESS_KEY_SECRET}
+    bucket-name: ${ALIYUN_OSS_BUCKET_NAME}
+
+app:
+  cors:
+    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
+
+springdoc:
+  api-docs:
+    enabled: ${SPRINGDOC_API_DOCS_ENABLED:true}
+  swagger-ui:
+    enabled: ${SPRINGDOC_SWAGGER_UI_ENABLED:true}
 
 task-reminder:
   scan-on-startup: ${TASK_REMINDER_SCAN_ON_STARTUP:false}
 
 collaboration-summary:
-  # 生产环境请通过 COLLABORATION_SUMMARY_INTERNAL_TOKEN 覆盖，且仅允许协同服务访问内部接口。
-  internal-token: ${COLLABORATION_SUMMARY_INTERNAL_TOKEN:teamup-local-collaboration-summary-token}
+  internal-token: ${COLLABORATION_SUMMARY_INTERNAL_TOKEN}
   delay-queue:
     scan-interval-ms: ${COLLABORATION_SUMMARY_SCAN_INTERVAL_MS:10000}
 
 collaboration-agent:
-  # 仅 TeamUp 后端可调用协同服务的草案快照与受控写入接口。
   internal-url: ${COLLABORATION_AGENT_INTERNAL_URL:http://127.0.0.1:1235}
-  internal-token: ${COLLABORATION_AGENT_INTERNAL_TOKEN:teamup-local-collaboration-agent-token}
+  internal-token: ${COLLABORATION_AGENT_INTERNAL_TOKEN}
+
+collaboration-access:
+  internal-token: ${COLLABORATION_ACCESS_INTERNAL_TOKEN}

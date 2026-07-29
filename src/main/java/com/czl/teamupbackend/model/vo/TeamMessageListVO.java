@@ -16,6 +16,4 @@ public class TeamMessageListVO {
     @Schema(description = "全部消息")
     private List<TeamMessageItemVO> allMessages;
 
-    @Schema(description = "待处理消息")
-    private List<TeamMessageItemVO> pendingMessages;
 }

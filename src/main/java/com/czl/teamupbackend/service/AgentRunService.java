@@ -17,6 +17,7 @@ public interface AgentRunService {
     boolean isWaitingConfirmation(Long runId);
     void resumeAfterConfirmedWrite(Long runId, String resultSummary);
     void resumeAfterConfirmedWrite(Long runId, String toolName, String resultSummary);
+    void resumeAfterRejectedDecision(Long runId, String toolName, String resultSummary);
     void markAnswering(Long runId);
     void complete(Long runId, Integer completionTokens);
     void fail(Long runId, String errorMessage);

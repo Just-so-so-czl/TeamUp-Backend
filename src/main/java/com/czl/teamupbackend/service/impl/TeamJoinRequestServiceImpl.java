@@ -39,7 +39,7 @@ public class TeamJoinRequestServiceImpl extends ServiceImpl<TeamJoinRequestMappe
     private static final int STATUS_APPROVED = 1;
     private static final int STATUS_REJECTED = 2;
     private static final int MESSAGE_TYPE_JOIN_REQUEST = 1;
-    private static final int MESSAGE_UNPROCESSED = 0;
+    private static final int MESSAGE_UNREAD = 0;
 
     private final TeamMapper teamMapper;
     private final TeamMemberMapper teamMemberMapper;
@@ -98,13 +98,13 @@ public class TeamJoinRequestServiceImpl extends ServiceImpl<TeamJoinRequestMappe
         teamRedisCacheService.evictTeamMembersAfterCommit(team.getId());
 
         TeamMessage message = new TeamMessage()
-            .setTitle("新的入组申请待处理")
+            .setTitle("新的入组申请")
             .setContent(buildMessageContent(user.getUsername(), team.getName(), description))
             .setTeamId(team.getId())
             .setType(MESSAGE_TYPE_JOIN_REQUEST)
             .setUserId(team.getOwnerId())
             .setRelatedUrl(buildMessageRelatedUrl(team.getId()))
-            .setIsProcessed(MESSAGE_UNPROCESSED);
+            .setIsRead(MESSAGE_UNREAD);
         teamMessageService.save(message);
 
         // 组长在线时推送实时提醒

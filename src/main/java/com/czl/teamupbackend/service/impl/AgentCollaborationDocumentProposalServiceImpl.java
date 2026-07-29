@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.czl.teamupbackend.commen.exception.BizException;
 import com.czl.teamupbackend.commen.exception.CollaborationDocumentPatchValidationException;
 import com.czl.teamupbackend.event.AgentConfirmationCompletedEvent;
+import com.czl.teamupbackend.event.AgentProposalRejectedEvent;
 import com.czl.teamupbackend.mapper.AiActionDraftMapper;
 import com.czl.teamupbackend.mapper.DocumentMapper;
 import com.czl.teamupbackend.model.dto.AiCollaborationDocumentPatchToolRequest;
@@ -31,6 +32,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Slf4j
 @Service
@@ -43,6 +45,7 @@ public class AgentCollaborationDocumentProposalServiceImpl implements AgentColla
     private static final String APPLYING = "APPLYING";
     private static final String EXECUTED = "EXECUTED";
     private static final String CONFLICTED = "CONFLICTED";
+    private static final String REJECTED = "REJECTED";
 
     private final AgentCollaborationSnapshotRepository snapshotRepository;
     private final AiActionDraftMapper draftMapper;
@@ -199,6 +202,43 @@ public class AgentCollaborationDocumentProposalServiceImpl implements AgentColla
             draft.getRunId(), userId, "applyCollaborationDocumentPatch", result.resultSummary()));
         draft.setStatus(EXECUTED);
         draft.setResultSummary(result.resultSummary());
+        return toVo(draft, payload);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public AgentCollaborationDocumentPatchProposalVO reject(Long userId, Long draftId) {
+        AiActionDraft draft = draftMapper.selectById(draftId);
+        if (draft == null || !userId.equals(draft.getCreatorUserId()) || !ACTION_TYPE.equals(draft.getActionType())) {
+            throw new BizException(404, "协作文档草案不存在或无权限");
+        }
+        Map<String, Object> payload = read(draft);
+        if (REJECTED.equals(draft.getStatus())) {
+            return toVo(draft, payload);
+        }
+        if (!PENDING.equals(draft.getStatus())) {
+            throw new BizException(409, "该文档草案正在处理或已完成，无法拒绝");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        String summary = "用户已拒绝文档编辑草案，文档未修改，已停止后续任务";
+        int updated = draftMapper.update(null, new LambdaUpdateWrapper<AiActionDraft>()
+            .eq(AiActionDraft::getId, draftId)
+            .eq(AiActionDraft::getStatus, PENDING)
+            .set(AiActionDraft::getStatus, REJECTED)
+            .set(AiActionDraft::getResultSummary, summary)
+            .set(AiActionDraft::getErrorMsg, "")
+            .set(AiActionDraft::getExecutedAt, now)
+            .set(AiActionDraft::getUpdatedAt, now));
+        if (updated != 1) {
+            throw new BizException(409, "该文档草案状态已变化，请刷新后重试");
+        }
+        agentRunService.resumeAfterRejectedDecision(draft.getRunId(), "proposeCollaborationDocumentPatch", summary);
+        applicationEventPublisher.publishEvent(new AgentProposalRejectedEvent(
+            draft.getRunId(), userId, "proposeCollaborationDocumentPatch", summary));
+        draft.setStatus(REJECTED).setResultSummary(summary).setErrorMsg("")
+            .setExecutedAt(now).setUpdatedAt(now);
+        log.info("Collaboration document proposal rejected, draftId={}, runId={}, userId={}",
+            draftId, draft.getRunId(), userId);
         return toVo(draft, payload);
     }
 

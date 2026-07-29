@@ -13,7 +13,10 @@ import java.io.IOException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.filter.OncePerRequestFilter;
+import java.util.List;
 
 /**
  * JWT认证过滤器
@@ -34,6 +37,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         FilterChain filterChain
     ) throws ServletException, IOException {
         UserContext.removeCurrentUser();
+        SecurityContextHolder.clearContext();
         String path = request.getRequestURI();
         try {
             if ("OPTIONS".equalsIgnoreCase(request.getMethod()) || isPublicPath(path)) {
@@ -63,9 +67,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 return;
             }
 
+            Long userId = UserContext.getCurrentUserId();
+            SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(userId, null, List.of()));
+
             filterChain.doFilter(request, response);
         } finally {
             UserContext.removeCurrentUser();
+            SecurityContextHolder.clearContext();
         }
     }
 
@@ -78,6 +87,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             || path.startsWith("/ws")
             || path.startsWith("/ws-notify")
             || path.startsWith("/internal/collaboration-summary")
+            || path.startsWith("/internal/collaboration-access")
             || path.startsWith("/error")
             || path.startsWith("/v3/api-docs")
             || path.startsWith("/swagger-ui")

@@ -39,7 +39,7 @@ public class TaskAssignmentServiceImpl extends ServiceImpl<TaskAssignmentMapper,
 
     private static final int MESSAGE_TYPE_TASK_CLAIM = 2;
     private static final int MESSAGE_TYPE_TASK_ASSIGN = 3;
-    private static final int MESSAGE_UNPROCESSED = 0;
+    private static final int MESSAGE_UNREAD = 0;
 
     private final TaskMapper taskMapper;
     private final TaskListMapper taskListMapper;
@@ -166,7 +166,7 @@ public class TaskAssignmentServiceImpl extends ServiceImpl<TaskAssignmentMapper,
             .setType(MESSAGE_TYPE_TASK_CLAIM)
             .setUserId(context.taskList.getCreatorId())
             .setRelatedUrl(buildTaskRelatedUrl(context.team.getId()))
-            .setIsProcessed(MESSAGE_UNPROCESSED);
+            .setIsRead(MESSAGE_UNREAD);
         teamMessageService.save(message);
         pushWebSocketNotify(context.taskList.getCreatorId(), context.team.getId(), "任务被认领", message.getContent());
     }
@@ -184,7 +184,7 @@ public class TaskAssignmentServiceImpl extends ServiceImpl<TaskAssignmentMapper,
             .setType(MESSAGE_TYPE_TASK_ASSIGN)
             .setUserId(assigneeUserId)
             .setRelatedUrl(buildTaskRelatedUrl(context.team.getId()))
-            .setIsProcessed(MESSAGE_UNPROCESSED);
+            .setIsRead(MESSAGE_UNREAD);
         teamMessageService.save(message);
         pushWebSocketNotify(assigneeUserId, context.team.getId(), "你有新的任务分配", message.getContent());
     }

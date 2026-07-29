@@ -1,7 +1,9 @@
 package com.czl.teamupbackend.config;
 
+import java.util.Arrays;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Bean;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
@@ -10,6 +12,9 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 @Configuration
 public class WebMvcCorsConfig implements WebMvcConfigurer {
+
+    @Value("${app.cors.allowed-origins}")
+    private String allowedOrigins;
 
     @Bean(name = "mvcAsyncTaskExecutor")
     public AsyncTaskExecutor mvcAsyncTaskExecutor() {
@@ -38,7 +43,7 @@ public class WebMvcCorsConfig implements WebMvcConfigurer {
     @Override
     public void addCorsMappings(CorsRegistry registry) {
         registry.addMapping("/**")
-            .allowedOriginPatterns("http://localhost:*", "http://127.0.0.1:*")
+            .allowedOriginPatterns(resolveAllowedOrigins())
             .allowedMethods("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS")
             .allowedHeaders("*")
             .allowCredentials(true)
@@ -49,5 +54,12 @@ public class WebMvcCorsConfig implements WebMvcConfigurer {
     public void configureAsyncSupport(AsyncSupportConfigurer configurer) {
         configurer.setTaskExecutor(mvcAsyncTaskExecutor());
         configurer.setDefaultTimeout(30_000L);
+    }
+
+    private String[] resolveAllowedOrigins() {
+        return Arrays.stream(allowedOrigins.split(","))
+            .map(String::trim)
+            .filter(value -> !value.isEmpty())
+            .toArray(String[]::new);
     }
 }

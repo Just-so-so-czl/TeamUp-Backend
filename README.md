@@ -53,13 +53,15 @@ TeamUp 是面向大学生小组学习与项目协作的平台后端。该服务�
 
 ## 配置
 
-1. 复制环境变量模板并填入敏感值：
+1. 所有配置统一在 [`application.yaml`](src/main/resources/application.yaml) 中维护。本地默认连接 `127.0.0.1`，部署时通过同名环境变量覆盖；不再使用 Spring Profile。
+
+2. 复制 `.env.example` 为 `.env`，只填写密钥和部署变量。`.env` 被 Git 忽略，`application.yaml` 中不保存任何真实凭据：
 
    ```powershell
    Copy-Item .env.example .env
    ```
 
-2. 在 `.env` 中至少配置实际使用的能力：
+3. 本地开发至少配置实际使用的能力：
 
    ```dotenv
    ALIYUN_OSS_ENDPOINT=oss-cn-hangzhou.aliyuncs.com
@@ -70,6 +72,7 @@ TeamUp 是面向大学生小组学习与项目协作的平台后端。该服务�
    SPRING_AI_OPENAI_BASE_URL=https://api.openai.com
    SPRING_AI_OPENAI_API_KEY=your-model-api-key
    SPRING_AI_OPENAI_CHAT_MODEL=gpt-4o-mini
+   SPRING_AI_OPENAI_SUMMARY_MODEL=Qwen3-32B
 
    MAIL_HOST=smtp.qq.com
    MAIL_PORT=465
@@ -80,7 +83,15 @@ TeamUp 是面向大学生小组学习与项目协作的平台后端。该服务�
    COLLABORATION_SUMMARY_INTERNAL_TOKEN=replace-with-a-long-random-token
    ```
 
-3. 数据库、Redis、MongoDB 和 RabbitMQ 的本地地址目前由 `application.yaml` 管理。请按本机环境修改其主机、端口、用户名和密码。生产环境应通过部署配置覆盖所有密钥和默认内部令牌。
+4. `.env` 由 `spring-dotenv` 加载；生产中也可由 Docker、systemd 或 Kubernetes 注入同名环境变量。生产环境必须覆盖基础设施连接信息、`JWT_SECRET`、OSS 密钥，以及以下三组彼此独立的随机内部令牌：
+
+   ```dotenv
+   COLLABORATION_SUMMARY_INTERNAL_TOKEN=<random-secret-1>
+   COLLABORATION_AGENT_INTERNAL_TOKEN=<random-secret-2>
+   COLLABORATION_ACCESS_INTERNAL_TOKEN=<random-secret-3>
+   ```
+
+   `JWT_SECRET` 至少为 32 字节。`APP_CORS_ALLOWED_ORIGINS` 只能填写实际前端来源的完整 Origin，例如 `https://app.example.com`；多个来源用英文逗号分隔，不能使用 `*`。Swagger 默认关闭，仅在受保护的运维环境中显式设为 `true`。
 
 ## 初始化数据库
 
@@ -91,7 +102,7 @@ CREATE DATABASE TeamUp DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE TeamUp;
 ```
 
-随后在 MySQL 客户端执行 [`table.sql`](table.sql)。该脚本包含业务表、AI 会话表、Agent 运行审计表和受控提案表；对已有数据库执行前请先备份，并按脚本中的增量 `ALTER TABLE` 注释确认当前表结构。
+随后在 MySQL 客户端对空数据库执行 [`table.sql`](table.sql)。该脚本包含当前完整的业务表、AI 会话表、Agent 运行审计表和受控提案表，不包含历史 `ALTER TABLE` 迁移。已有数据库升级前必须先备份，并另行编写与实际旧版本对应的迁移脚本；不要直接执行此初始化脚本。
 
 ## 启动
 
@@ -127,8 +138,8 @@ mvn spring-boot:run
 1. 启动 MySQL、MongoDB、Redis、RabbitMQ，以及按需配置 OSS、邮件和模型服务。
 2. 初始化 MySQL 的 `TeamUp` 数据库并执行 `table.sql`。
 3. 启动本服务（端口 `8080`）。
-4. 启动 `collaboration-server`（默认端口 `1234`），并让其 `COLLABORATION_SUMMARY_INTERNAL_TOKEN` 与本服务一致。
-5. 启动 `TeamUp-Frontend`（默认端口 `5173`）。前端当前默认请求 `http://localhost:8080`，协同编辑默认连接 `ws://127.0.0.1:1234`。
+4. 启动 `collaboration-server`（默认端口 `1234`）。将其 `COLLABORATION_SUMMARY_INTERNAL_TOKEN`、`COLLABORATION_AGENT_INTERNAL_TOKEN` 和 `COLLABORATION_ACCESS_INTERNAL_TOKEN` 分别配置为与本服务相同的值，并让 `COLLABORATION_ACCESS_VERIFY_URL` 指向本服务的内部地址。
+5. 启动 `TeamUp-Frontend`。生产构建前设置 `VITE_API_BASE_URL`、`VITE_WS_NOTIFY_URL` 和 `VITE_HOCUSPOCUS_URL`，其来源域名必须写入 `APP_CORS_ALLOWED_ORIGINS`。
 
 协同服务在文档落盘后会请求：
 
@@ -137,7 +148,7 @@ POST /internal/collaboration-summary/content-changed
 X-Collaboration-Internal-Token: <shared-token>
 ```
 
-请仅在受信任的内网中暴露该内部接口，并在生产环境使用高强度随机令牌。
+请仅在受信任的内网中暴露该内部接口，并在生产环境使用高强度随机令牌。协同访问验证接口 `/internal/collaboration-access/verify` 也只能由协同服务使用，二者均以内部令牌保护，应在反向代理/防火墙层限制来源。
 
 ## 目录说明
 
@@ -159,8 +170,7 @@ table.sql          MySQL 初始化与增量表结构
 
 | 现象 | 排查方式 |
 | --- | --- |
-| 应用启动后数据库不可用 | 核对 `application.yaml` 的 MySQL 端口、数据库名和账号；确认 `TeamUp` 已创建并已执行 `table.sql`。 |
+| 应用启动后数据库不可用 | 核对 `.env` 或部署环境变量中的 MySQL 地址、数据库名和账号；确认 `TeamUp` 已创建并已执行 `table.sql`。 |
 | AI 对话无法响应 | 检查 `SPRING_AI_OPENAI_*` 配置及模型网关可达性；同时确认 MongoDB、Redis 已启动。 |
 | 协作文档不生成摘要 | 检查协同服务是否运行、`SUMMARY_CALLBACK_URL` 是否可访问，以及两端内部令牌是否完全一致。 |
-| 前端跨域或实时通知失败 | 开发环境需使用 `http://localhost:5173`；WebSocket 连接必须携带登录后的 JWT。 |
-
+| 前端跨域或实时通知失败 | 检查浏览器 Origin 已精确写入 `APP_CORS_ALLOWED_ORIGINS`；WebSocket 连接必须携带登录后的 JWT。 |

@@ -1,11 +1,11 @@
 package com.czl.teamupbackend.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.czl.teamupbackend.commen.exception.BizException;
 import com.czl.teamupbackend.mapper.TeamMapper;
 import com.czl.teamupbackend.mapper.TeamMessageMapper;
-import com.czl.teamupbackend.model.dto.TeamMessageProcessRequest;
 import com.czl.teamupbackend.model.entity.Team;
 import com.czl.teamupbackend.model.entity.TeamMessage;
 import com.czl.teamupbackend.model.vo.TeamMessageItemVO;
@@ -32,6 +32,7 @@ public class TeamMessageServiceImpl extends ServiceImpl<TeamMessageMapper, TeamM
     private final TeamMapper teamMapper;
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public TeamMessageListVO listMyMessages(Long userId) {
         if (userId == null || userId <= 0) {
             throw new BizException(401, "未登录");
@@ -42,11 +43,9 @@ public class TeamMessageServiceImpl extends ServiceImpl<TeamMessageMapper, TeamM
                 .eq(TeamMessage::getUserId, userId)
                 .orderByDesc(TeamMessage::getCreateTime)
         );
+        markUnreadMessagesAsRead(userId);
         if (messages.isEmpty()) {
-            return TeamMessageListVO.builder()
-                .allMessages(new ArrayList<>())
-                .pendingMessages(new ArrayList<>())
-                .build();
+            return TeamMessageListVO.builder().allMessages(new ArrayList<>()).build();
         }
 
         List<Long> teamIds = messages.stream()
@@ -68,43 +67,30 @@ public class TeamMessageServiceImpl extends ServiceImpl<TeamMessageMapper, TeamM
                 .type(item.getType())
                 .relatedUrl(item.getRelatedUrl())
                 .messageTime(item.getCreateTime())
-                .isProcessed(item.getIsProcessed())
+                .isRead(1)
                 .build())
             .collect(Collectors.toList());
 
-        List<TeamMessageItemVO> pendingMessages = allMessages.stream()
-            .filter(item -> item.getIsProcessed() != null && item.getIsProcessed() == 0)
-            .collect(Collectors.toList());
-
-        return TeamMessageListVO.builder()
-            .allMessages(allMessages)
-            .pendingMessages(pendingMessages)
-            .build();
+        return TeamMessageListVO.builder().allMessages(allMessages).build();
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
-    public void processMessage(Long userId, TeamMessageProcessRequest request) {
+    public long countUnreadMessages(Long userId) {
         if (userId == null || userId <= 0) {
             throw new BizException(401, "未登录");
         }
-        if (request == null || request.getMessageId() == null || request.getMessageId() <= 0) {
-            throw new BizException(400, "消息ID不合法");
-        }
+        return this.count(new LambdaQueryWrapper<TeamMessage>()
+            .eq(TeamMessage::getUserId, userId)
+            .eq(TeamMessage::getIsRead, 0));
+    }
 
-        TeamMessage message = this.getById(request.getMessageId());
-        if (message == null) {
-            throw new BizException(404, "消息不存在");
+    private void markUnreadMessagesAsRead(Long userId) {
+        boolean updated = this.update(new LambdaUpdateWrapper<TeamMessage>()
+            .eq(TeamMessage::getUserId, userId)
+            .eq(TeamMessage::getIsRead, 0)
+            .set(TeamMessage::getIsRead, 1));
+        if (updated) {
+            log.info("All unread messages marked as read, userId={}", userId);
         }
-        if (!userId.equals(message.getUserId())) {
-            throw new BizException(403, "无权处理该消息");
-        }
-        if (message.getIsProcessed() != null && message.getIsProcessed() == 1) {
-            return;
-        }
-
-        message.setIsProcessed(1);
-        this.updateById(message);
-        log.info("Message processed, messageId={}, userId={}", request.getMessageId(), userId);
     }
 }

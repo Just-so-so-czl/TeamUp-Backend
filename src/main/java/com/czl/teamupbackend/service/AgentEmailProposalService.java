@@ -10,5 +10,6 @@ public interface AgentEmailProposalService {
     AgentEmailProposalVO getPending(Long operatorUserId, Long runId);
     boolean hasExecuted(Long operatorUserId, Long runId);
     AgentEmailProposalVO execute(Long operatorUserId, Long draftId, String subject, String content);
+    AgentEmailProposalVO reject(Long operatorUserId, Long draftId);
     Map<Long, AgentEmailProposalVO> findByRunIds(Long operatorUserId, Collection<Long> runIds);
 }

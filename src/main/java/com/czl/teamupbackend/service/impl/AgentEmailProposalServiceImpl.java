@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.czl.teamupbackend.commen.exception.BizException;
 import com.czl.teamupbackend.event.AgentConfirmationCompletedEvent;
+import com.czl.teamupbackend.event.AgentProposalRejectedEvent;
 import com.czl.teamupbackend.mapper.AiActionDraftMapper;
 import com.czl.teamupbackend.mapper.TeamMemberMapper;
 import com.czl.teamupbackend.mapper.UserMapper;
@@ -27,6 +28,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.transaction.annotation.Transactional;
 
 @Slf4j
 @Service
@@ -36,6 +38,7 @@ public class AgentEmailProposalServiceImpl implements AgentEmailProposalService 
     private static final String STATUS_PENDING = "PENDING_CONFIRMATION";
     private static final String STATUS_SENDING = "SENDING";
     private static final String STATUS_EXECUTED = "EXECUTED";
+    private static final String STATUS_REJECTED = "REJECTED";
     private final AiActionDraftMapper draftMapper;
     private final TeamMemberMapper teamMemberMapper;
     private final UserMapper userMapper;
@@ -131,6 +134,44 @@ public class AgentEmailProposalServiceImpl implements AgentEmailProposalService 
             draftMapper.updateById(new AiActionDraft().setId(draftId).setStatus(STATUS_PENDING).setErrorMsg(limit(ex.getMessage(), 500)));
             throw ex;
         }
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public AgentEmailProposalVO reject(Long operatorUserId, Long draftId) {
+        AiActionDraft draft = draftMapper.selectById(draftId);
+        if (draft == null || !operatorUserId.equals(draft.getCreatorUserId())
+            || !ACTION_EMAIL_SEND.equals(draft.getActionType())) {
+            throw new BizException(404, "邮件提案不存在或无权限");
+        }
+        Map<String, Object> payload = readPayload(draft);
+        if (STATUS_REJECTED.equals(draft.getStatus())) {
+            return toVo(draft, payload);
+        }
+        if (!STATUS_PENDING.equals(draft.getStatus())) {
+            throw new BizException(409, "该邮件草案正在处理或已完成，无法拒绝");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        String summary = "用户已拒绝邮件草案，邮件未发送，已停止后续任务";
+        int updated = draftMapper.update(null, new LambdaUpdateWrapper<AiActionDraft>()
+            .eq(AiActionDraft::getId, draftId)
+            .eq(AiActionDraft::getStatus, STATUS_PENDING)
+            .set(AiActionDraft::getStatus, STATUS_REJECTED)
+            .set(AiActionDraft::getResultSummary, summary)
+            .set(AiActionDraft::getErrorMsg, "")
+            .set(AiActionDraft::getExecutedAt, now)
+            .set(AiActionDraft::getUpdatedAt, now));
+        if (updated != 1) {
+            throw new BizException(409, "该邮件草案状态已变化，请刷新后重试");
+        }
+        agentRunService.resumeAfterRejectedDecision(draft.getRunId(), "proposeTeamEmail", summary);
+        applicationEventPublisher.publishEvent(new AgentProposalRejectedEvent(
+            draft.getRunId(), operatorUserId, "proposeTeamEmail", summary));
+        draft.setStatus(STATUS_REJECTED).setResultSummary(summary).setErrorMsg("")
+            .setExecutedAt(now).setUpdatedAt(now);
+        log.info("Email proposal rejected, draftId={}, runId={}, operatorUserId={}",
+            draftId, draft.getRunId(), operatorUserId);
+        return toVo(draft, payload);
     }
 
     @Override

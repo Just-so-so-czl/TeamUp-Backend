@@ -15,7 +15,7 @@ public class JwtProperties {
     /**
      * JWT signing key, at least 32 chars for HS256.
      */
-    private String secret = "TeamUpJwtSecretKeyAtLeast32Chars!";
+    private String secret = "";
 
     /**
      * Token validity period (milliseconds).

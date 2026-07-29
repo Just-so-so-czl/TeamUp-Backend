@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.czl.teamupbackend.commen.exception.BizException;
 import com.czl.teamupbackend.event.AgentConfirmationCompletedEvent;
+import com.czl.teamupbackend.event.AgentProposalRejectedEvent;
 import com.czl.teamupbackend.mapper.AiActionDraftMapper;
 import com.czl.teamupbackend.mapper.TeamMapper;
 import com.czl.teamupbackend.model.dto.AiTaskListProposalToolRequest;
@@ -35,6 +36,7 @@ public class AgentTaskListProposalServiceImpl implements AgentTaskListProposalSe
     private static final String ACTION_TYPE = "TASK_LIST_CREATE";
     private static final String PENDING = "PENDING_CONFIRMATION";
     private static final String EXECUTED = "EXECUTED";
+    private static final String REJECTED = "REJECTED";
     private final AiActionDraftMapper draftMapper;
     private final TeamMapper teamMapper;
     private final ObjectMapper objectMapper;
@@ -102,6 +104,42 @@ public class AgentTaskListProposalServiceImpl implements AgentTaskListProposalSe
         log.info("Task-list proposal publishing agent confirmation event, draftId={}, runId={}", draftId, draft.getRunId());
         applicationEventPublisher.publishEvent(new AgentConfirmationCompletedEvent(draft.getRunId(), userId, "createTaskList", summary));
         draft.setStatus(EXECUTED); draft.setPayloadJson(write(payload)); draft.setResultSummary(summary); return toVo(draft, payload);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public AgentTaskListProposalVO reject(Long userId, Long draftId) {
+        AiActionDraft draft = draftMapper.selectById(draftId);
+        if (draft == null || !userId.equals(draft.getCreatorUserId()) || !ACTION_TYPE.equals(draft.getActionType())) {
+            throw new BizException(404, "任务清单提案不存在或无权限");
+        }
+        Map<String, Object> payload = read(draft);
+        if (REJECTED.equals(draft.getStatus())) {
+            return toVo(draft, payload);
+        }
+        if (!PENDING.equals(draft.getStatus())) {
+            throw new BizException(409, "该任务清单草案正在处理或已完成，无法拒绝");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        String summary = "用户已拒绝任务清单草案，任务清单未创建，已停止后续任务";
+        int updated = draftMapper.update(null, new LambdaUpdateWrapper<AiActionDraft>()
+            .eq(AiActionDraft::getId, draftId)
+            .eq(AiActionDraft::getStatus, PENDING)
+            .set(AiActionDraft::getStatus, REJECTED)
+            .set(AiActionDraft::getResultSummary, summary)
+            .set(AiActionDraft::getErrorMsg, "")
+            .set(AiActionDraft::getExecutedAt, now)
+            .set(AiActionDraft::getUpdatedAt, now));
+        if (updated != 1) {
+            throw new BizException(409, "该任务清单草案状态已变化，请刷新后重试");
+        }
+        agentRunService.resumeAfterRejectedDecision(draft.getRunId(), "proposeTaskList", summary);
+        applicationEventPublisher.publishEvent(new AgentProposalRejectedEvent(
+            draft.getRunId(), userId, "proposeTaskList", summary));
+        draft.setStatus(REJECTED).setResultSummary(summary).setErrorMsg("")
+            .setExecutedAt(now).setUpdatedAt(now);
+        log.info("Task-list proposal rejected, draftId={}, runId={}, userId={}", draftId, draft.getRunId(), userId);
+        return toVo(draft, payload);
     }
 
     @Override

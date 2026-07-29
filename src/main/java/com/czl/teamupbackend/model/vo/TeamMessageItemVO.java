@@ -37,6 +37,6 @@ public class TeamMessageItemVO {
     @Schema(description = "消息时间")
     private LocalDateTime messageTime;
 
-    @Schema(description = "是否已处理: 0-未处理 1-已处理")
-    private Integer isProcessed;
+    @Schema(description = "是否已读: 0-未读 1-已读")
+    private Integer isRead;
 }
